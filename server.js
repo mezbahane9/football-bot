@@ -5,8 +5,9 @@ const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_SECONDS = Number(process.env.POLL_SECONDS || 90);
-const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE || 8.7);
+const POLL_SECONDS = Number(process.env.POLL_SECONDS || 120);
+const MIN_NORMAL = 8.0;
+const MIN_ELITE = 8.7;
 
 let memory = {};
 let lastSent = {};
@@ -27,9 +28,7 @@ function badLeague(leagueName = "") {
     "Amateur", "Regional"
   ];
 
-  return bad.some(x =>
-    leagueName.toLowerCase().includes(x.toLowerCase())
-  );
+  return bad.some(x => leagueName.toLowerCase().includes(x.toLowerCase()));
 }
 
 function getStat(stats, type) {
@@ -169,6 +168,12 @@ function botView(dominant, totalDiff) {
   return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi gol baskısının yükseldiğini gösteriyor.`;
 }
 
+function signalType(conf) {
+  if (conf >= MIN_ELITE) return "🔥 ELITE";
+  if (conf >= MIN_NORMAL) return "🟢 NORMAL";
+  return null;
+}
+
 async function fetchLiveMatches() {
   try {
     const fixtures = await axios.get(
@@ -193,6 +198,11 @@ async function fetchLiveMatches() {
 
       if (!minute || minute < 8 || minute > 90) continue;
       if (badLeague(league)) continue;
+
+      // API limit koruması: sadece uygun dakikalarda istatistik çek
+      if (!((minute >= 12 && minute <= 45) || (minute >= 46 && minute <= 90))) {
+        continue;
+      }
 
       const statsRes = await axios.get(
         `https://v3.football.api-sports.io/fixtures/statistics?fixture=${id}`,
@@ -226,6 +236,7 @@ async function fetchLiveMatches() {
       if (!validMomentum(totalDiff)) continue;
 
       const dominant = chooseSide(homeDiff, awayDiff);
+
       const market = selectMarket(
         minute,
         homeGoals,
@@ -244,7 +255,8 @@ async function fetchLiveMatches() {
         dominant
       );
 
-      if (conf < MIN_CONFIDENCE) continue;
+      const type = signalType(conf);
+      if (!type) continue;
 
       const last = lastSent[id] || 0;
       if (Date.now() - last < 10 * 60 * 1000) continue;
@@ -252,7 +264,7 @@ async function fetchLiveMatches() {
       lastSent[id] = Date.now();
 
       const msg = `
-🟢 <b>GİR</b>
+${type} <b>GİR</b>
 
 <b>Maç:</b> ${home} - ${away}
 <b>Lig:</b> ${league}
@@ -269,7 +281,7 @@ ${botView(dominant, totalDiff)}
       await sendTelegram(msg);
 
       console.log(
-        `SİNYAL: ${home} - ${away} | ${market} | ${conf}/10`
+        `SİNYAL: ${home} - ${away} | ${type} | ${market} | ${conf}/10`
       );
     }
   } catch (err) {
