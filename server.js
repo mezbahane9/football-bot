@@ -12,6 +12,7 @@ const MIN_ELITE = 8.7;
 let memory = {};
 let lastSent = {};
 let activeSignals = {};
+let lastStatsUpdateId = 0;
 
 let performance = {
   total: 0,
@@ -361,17 +362,19 @@ ${botView(dominant, totalDiff)}
 async function checkStatsCommand() {
   try {
     const res = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`);
-    const msgs = res.data.result || [];
+    const updates = res.data.result || [];
 
-    const last = msgs[msgs.length - 1];
-    if (!last || !last.message) return;
+    for (const update of updates) {
+      if (update.update_id <= lastStatsUpdateId) continue;
 
-    if (last.message.text === "/stats") {
-      const winRate = performance.total
-        ? ((performance.win / performance.total) * 100).toFixed(1)
-        : 0;
+      lastStatsUpdateId = update.update_id;
 
-      await sendTelegram(`
+      if (update.message?.text === "/stats") {
+        const winRate = performance.total
+          ? ((performance.win / performance.total) * 100).toFixed(1)
+          : 0;
+
+        await sendTelegram(`
 📊 <b>PERFORMANS</b>
 
 Toplam Sinyal: ${performance.total}
@@ -379,6 +382,7 @@ WIN: ${performance.win}
 LOSE: ${performance.lose}
 Başarı: %${winRate}
 `);
+      }
     }
   } catch (err) {
     console.log("Stats komut hatası:", err.message);
