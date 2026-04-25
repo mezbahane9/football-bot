@@ -11,6 +11,13 @@ const MIN_ELITE = 8.7;
 
 let memory = {};
 let lastSent = {};
+let activeSignals = {};
+
+let performance = {
+  total: 0,
+  win: 0,
+  lose: 0
+};
 
 async function sendTelegram(text) {
   await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -174,6 +181,54 @@ function signalType(conf) {
   return null;
 }
 
+async function checkPerformance(matches) {
+  for (const sid in activeSignals) {
+    const sig = activeSignals[sid];
+    const match = matches.find(x => String(x.fixture.id) === String(sid));
+
+    if (!match) continue;
+
+    const nowMinute = match.fixture.status.elapsed;
+    const newHome = Number(match.goals.home || 0);
+    const newAway = Number(match.goals.away || 0);
+
+    const oldTotal = sig.homeGoals + sig.awayGoals;
+    const newTotal = newHome + newAway;
+
+    if (newTotal > oldTotal) {
+      const diffMin = nowMinute - sig.minute;
+
+      performance.win++;
+
+      await sendTelegram(`
+🎯 <b>SONUÇ: WIN</b>
+
+<b>Maç:</b> ${sig.home} - ${sig.away}
+<b>Sinyal:</b> ${sig.type}
+<b>Market:</b> ${sig.market}
+⏱️ <b>Gol Süresi:</b> ${diffMin} dk
+`);
+
+      delete activeSignals[sid];
+      continue;
+    }
+
+    if (nowMinute - sig.minute >= 20) {
+      performance.lose++;
+
+      await sendTelegram(`
+❌ <b>SONUÇ: LOSE</b>
+
+<b>Maç:</b> ${sig.home} - ${sig.away}
+<b>Sinyal:</b> ${sig.type}
+<b>Market:</b> ${sig.market}
+`);
+
+      delete activeSignals[sid];
+    }
+  }
+}
+
 async function fetchLiveMatches() {
   try {
     const fixtures = await axios.get(
@@ -187,6 +242,8 @@ async function fetchLiveMatches() {
 
     console.log(`API TEST: ${matches.length} canlı maç bulundu.`);
 
+    await checkPerformance(matches);
+
     for (const m of matches) {
       const id = m.fixture.id;
       const minute = m.fixture.status.elapsed;
@@ -199,7 +256,6 @@ async function fetchLiveMatches() {
       if (!minute || minute < 8 || minute > 90) continue;
       if (badLeague(league)) continue;
 
-      // API limit koruması: sadece uygun dakikalarda istatistik çek
       if (!((minute >= 12 && minute <= 45) || (minute >= 46 && minute <= 90))) {
         continue;
       }
@@ -280,12 +336,52 @@ ${botView(dominant, totalDiff)}
 
       await sendTelegram(msg);
 
+      activeSignals[id] = {
+        minute,
+        homeGoals,
+        awayGoals,
+        time: Date.now(),
+        type,
+        market,
+        home,
+        away
+      };
+
+      performance.total++;
+
       console.log(
         `SİNYAL: ${home} - ${away} | ${type} | ${market} | ${conf}/10`
       );
     }
   } catch (err) {
     console.log("HATA:", err.response?.data || err.message);
+  }
+}
+
+async function checkStatsCommand() {
+  try {
+    const res = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`);
+    const msgs = res.data.result || [];
+
+    const last = msgs[msgs.length - 1];
+    if (!last || !last.message) return;
+
+    if (last.message.text === "/stats") {
+      const winRate = performance.total
+        ? ((performance.win / performance.total) * 100).toFixed(1)
+        : 0;
+
+      await sendTelegram(`
+📊 <b>PERFORMANS</b>
+
+Toplam Sinyal: ${performance.total}
+WIN: ${performance.win}
+LOSE: ${performance.lose}
+Başarı: %${winRate}
+`);
+    }
+  } catch (err) {
+    console.log("Stats komut hatası:", err.message);
   }
 }
 
@@ -302,3 +398,4 @@ setTimeout(() => {
 fetchLiveMatches();
 
 setInterval(fetchLiveMatches, POLL_SECONDS * 1000);
+setInterval(checkStatsCommand, 15000);
