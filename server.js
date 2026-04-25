@@ -5,8 +5,8 @@ const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_SECONDS = Number(process.env.POLL_SECONDS || 45);
-const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE || 8.5);
+const POLL_SECONDS = Number(process.env.POLL_SECONDS || 90);
+const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE || 8.7);
 
 let memory = {};
 let lastSent = {};
@@ -23,22 +23,29 @@ function badLeague(leagueName = "") {
   const bad = [
     "U19", "U20", "U21", "U23",
     "Youth", "Reserve", "Reserves",
-    "Women", "W",
-    "Friendly", "Club Friendlies",
+    "Women", "Friendly", "Club Friendlies",
     "Amateur", "Regional"
   ];
-  return bad.some(x => leagueName.toLowerCase().includes(x.toLowerCase()));
+
+  return bad.some(x =>
+    leagueName.toLowerCase().includes(x.toLowerCase())
+  );
 }
 
 function getStat(stats, type) {
   const raw = stats.find(x => x.type === type)?.value;
+
   if (raw === null || raw === undefined) return 0;
-  if (typeof raw === "string" && raw.includes("%")) return Number(raw.replace("%", "")) || 0;
+  if (typeof raw === "string" && raw.includes("%")) {
+    return Number(raw.replace("%", "")) || 0;
+  }
+
   return Number(raw) || 0;
 }
 
 function extractTeamStats(teamStats) {
   const s = teamStats?.statistics || [];
+
   return {
     shots: getStat(s, "Total Shots"),
     shotsOn: getStat(s, "Shots on Goal"),
@@ -83,12 +90,21 @@ function chooseSide(homeDiff, awayDiff) {
   const h = pressureScore(homeDiff);
   const a = pressureScore(awayDiff);
 
-  if (h >= a + 4) return { side: "Ev", score: h, diff: homeDiff };
-  if (a >= h + 4) return { side: "Deplasman", score: a, diff: awayDiff };
-  return { side: "Dengeli", score: Math.max(h, a), diff: h >= a ? homeDiff : awayDiff };
+  if (h >= a + 4) return { side: "Ev", score: h };
+  if (a >= h + 4) return { side: "Deplasman", score: a };
+
+  return { side: "Dengeli", score: Math.max(h, a) };
 }
 
-function confidence(minute, scoreHome, scoreAway, totalDiff, dominant) {
+function validMomentum(totalDiff) {
+  if (totalDiff.shots < 3) return false;
+  if (totalDiff.shotsOn < 1) return false;
+  if (totalDiff.dangerous < 8) return false;
+
+  return true;
+}
+
+function confidence(minute, homeGoals, awayGoals, totalDiff, dominant) {
   let c = 5;
 
   c += totalDiff.shots * 0.35;
@@ -101,7 +117,7 @@ function confidence(minute, scoreHome, scoreAway, totalDiff, dominant) {
   if (totalDiff.corners >= 2) c += 0.4;
   if (totalDiff.dangerous >= 14) c += 0.5;
 
-  const goals = scoreHome + scoreAway;
+  const goals = homeGoals + awayGoals;
 
   if (minute >= 18 && minute <= 44 && goals === 0) c += 0.5;
   if (minute >= 50 && minute <= 78) c += 0.4;
@@ -113,7 +129,6 @@ function confidence(minute, scoreHome, scoreAway, totalDiff, dominant) {
 function selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant) {
   const goals = homeGoals + awayGoals;
 
-  // 0-45 ilk yarı
   if (minute >= 12 && minute <= 45) {
     if (goals === 0) return "İlk Yarı 0.5 ÜST";
 
@@ -131,7 +146,6 @@ function selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant) {
     if (dominant.side === "Deplasman") return "Sıradaki Gol Deplasman";
   }
 
-  // 45-90 maç sonu
   if (minute >= 46 && minute <= 90) {
     if (goals === 0) return "Maç Sonu 1.5 ÜST";
     if (goals === 1) return "Maç Sonu 1.5 ÜST";
@@ -146,34 +160,27 @@ function selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant) {
   return null;
 }
 
-function validMomentum(totalDiff) {
-  // fake sinyal engeli: tek başına atak yetmez
-  if (totalDiff.shots < 3) return false;
-  if (totalDiff.shotsOn < 1) return false;
-  if (totalDiff.dangerous < 8) return false;
-
-  // sadece korner / sadece tehlikeli atak sinyali atmasın
-  if (totalDiff.shotsOn === 0) return false;
-
-  return true;
-}
-
-function botView(market, dominant, totalDiff, conf) {
+function botView(dominant, totalDiff) {
   const sideText =
     dominant.side === "Dengeli"
-      ? "İki takımda da tempo var"
+      ? "İki takımda da tempo yükseldi"
       : `Momentum ${dominant.side} tarafına geçti`;
 
-  return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi bu market için güçlü gol baskısı gösteriyor.`;
+  return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi gol baskısının yükseldiğini gösteriyor.`;
 }
 
 async function fetchLiveMatches() {
   try {
-    const fixtures = await axios.get("https://v3.football.api-sports.io/fixtures?live=all", {
-      headers: { "x-apisports-key": API_KEY }
-    });
+    const fixtures = await axios.get(
+      "https://v3.football.api-sports.io/fixtures?live=all",
+      {
+        headers: { "x-apisports-key": API_KEY }
+      }
+    );
 
     const matches = fixtures.data.response || [];
+
+    console.log(`API TEST: ${matches.length} canlı maç bulundu.`);
 
     for (const m of matches) {
       const id = m.fixture.id;
@@ -187,12 +194,11 @@ async function fetchLiveMatches() {
       if (!minute || minute < 8 || minute > 90) continue;
       if (badLeague(league)) continue;
 
-      // sadece sinyal aralığında stats çekiyoruz, limit koruması
-      if (!((minute >= 12 && minute <= 45) || (minute >= 46 && minute <= 90))) continue;
-
       const statsRes = await axios.get(
         `https://v3.football.api-sports.io/fixtures/statistics?fixture=${id}`,
-        { headers: { "x-apisports-key": API_KEY } }
+        {
+          headers: { "x-apisports-key": API_KEY }
+        }
       );
 
       const stats = statsRes.data.response || [];
@@ -209,7 +215,6 @@ async function fetchLiveMatches() {
       };
 
       const old = memory[id];
-
       memory[id] = now;
 
       if (!old) continue;
@@ -221,10 +226,24 @@ async function fetchLiveMatches() {
       if (!validMomentum(totalDiff)) continue;
 
       const dominant = chooseSide(homeDiff, awayDiff);
-      const market = selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant);
+      const market = selectMarket(
+        minute,
+        homeGoals,
+        awayGoals,
+        totalDiff,
+        dominant
+      );
+
       if (!market) continue;
 
-      const conf = confidence(minute, homeGoals, awayGoals, totalDiff, dominant);
+      const conf = confidence(
+        minute,
+        homeGoals,
+        awayGoals,
+        totalDiff,
+        dominant
+      );
+
       if (conf < MIN_CONFIDENCE) continue;
 
       const last = lastSent[id] || 0;
@@ -244,17 +263,30 @@ async function fetchLiveMatches() {
 <b>Güven:</b> ${conf}/10
 
 🤖 <b>Bot Görüşü:</b>
-${botView(market, dominant, totalDiff, conf)}
+${botView(dominant, totalDiff)}
 `;
 
       await sendTelegram(msg);
-      console.log("Sinyal gönderildi:", home, "-", away, market, conf);
+
+      console.log(
+        `SİNYAL: ${home} - ${away} | ${market} | ${conf}/10`
+      );
     }
   } catch (err) {
-    console.log("Hata:", err.response?.data || err.message);
+    console.log("HATA:", err.response?.data || err.message);
   }
 }
 
 console.log("PRO bot çalışıyor...");
+
+setTimeout(() => {
+  sendTelegram("✅ BOT TEST: Telegram bağlantısı çalışıyor.")
+    .then(() => console.log("Telegram test mesajı gönderildi."))
+    .catch(err =>
+      console.log("Telegram test hatası:", err.response?.data || err.message)
+    );
+}, 10000);
+
 fetchLiveMatches();
+
 setInterval(fetchLiveMatches, POLL_SECONDS * 1000);
