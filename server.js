@@ -7,8 +7,8 @@ const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
 const STATS_DELAY = Number(process.env.STATS_DELAY || 1500);
 
 const MIN_RADAR = Number(process.env.MIN_RADAR || 7.0);
-const MIN_NORMAL = Number(process.env.MIN_NORMAL || 9.0);
-const MIN_ELITE = Number(process.env.MIN_ELITE || 10.5);
+const MIN_GIR = Number(process.env.MIN_GIR || 9.5);
+const MIN_ELITE = Number(process.env.MIN_ELITE || 11.0);
 
 const sent = new Map();
 const memory = new Map();
@@ -39,7 +39,7 @@ async function apiGet(url) {
     });
 
     if (res.status === 429) {
-      console.log("⏳ Rate limit yedik. 90 sn bekleniyor...");
+      console.log("⏳ Rate limit. 90 sn bekleniyor...");
       await sleep(90000);
       return null;
     }
@@ -65,7 +65,6 @@ async function getStats(fixtureId) {
   const data = await apiGet(
     `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`
   );
-
   return data?.response || [];
 }
 
@@ -73,7 +72,6 @@ function getValue(arr, name) {
   const raw = arr.find(x => x.type === name)?.value;
 
   if (raw === null || raw === undefined) return 0;
-
   if (typeof raw === "string" && raw.includes("%")) {
     return Number(raw.replace("%", "")) || 0;
   }
@@ -106,25 +104,9 @@ function extractTeamStats(team) {
 }
 
 function combine(a, b) {
-  return {
-    shots: a.shots + b.shots,
-    shotsOn: a.shotsOn + b.shotsOn,
-    shotsOff: a.shotsOff + b.shotsOff,
-    blocked: a.blocked + b.blocked,
-    insideBox: a.insideBox + b.insideBox,
-    outsideBox: a.outsideBox + b.outsideBox,
-    corners: a.corners + b.corners,
-    offsides: a.offsides + b.offsides,
-    fouls: a.fouls + b.fouls,
-    yellow: a.yellow + b.yellow,
-    red: a.red + b.red,
-    possession: a.possession + b.possession,
-    saves: a.saves + b.saves,
-    passes: a.passes + b.passes,
-    accuratePasses: a.accuratePasses + b.accuratePasses,
-    passPercent: a.passPercent + b.passPercent,
-    dangerous: a.dangerous + b.dangerous
-  };
+  const out = {};
+  for (const key of Object.keys(a)) out[key] = (a[key] || 0) + (b[key] || 0);
+  return out;
 }
 
 function diff(now, old) {
@@ -149,97 +131,63 @@ function badLeague(name = "") {
   return bad.some(x => name.toLowerCase().includes(x.toLowerCase()));
 }
 
-function selectMarket(minute, totalGoals) {
-  if (minute >= 25 && minute <= 42 && totalGoals === 0) {
-    return "İlk Yarı 0.5 ÜST";
-  }
-
-  if (minute >= 25 && minute <= 40 && totalGoals === 1) {
-    return "İlk Yarı 1.5 ÜST";
-  }
-
-  if (minute >= 50 && minute <= 75) {
-    if (totalGoals <= 1) return "Maç Sonu 1.5 ÜST";
-    if (totalGoals === 2) return "Maç Sonu 2.5 ÜST";
-    if (totalGoals === 3 && minute <= 68) return "Maç Sonu 3.5 ÜST";
-  }
-
-  return null;
-}
-
-function kalanGol(market, totalGoals) {
-  if (!market) return 99;
-  if (market.includes("0.5")) return Math.max(0, 1 - totalGoals);
-  if (market.includes("1.5")) return Math.max(0, 2 - totalGoals);
-  if (market.includes("2.5")) return Math.max(0, 3 - totalGoals);
-  if (market.includes("3.5")) return Math.max(0, 4 - totalGoals);
-  return 99;
-}
-
-function sideScore(t) {
-  return (
-    t.shots * 0.25 +
-    t.shotsOn * 1.35 +
-    t.shotsOff * 0.25 +
-    t.insideBox * 0.55 +
-    t.corners * 0.75 +
-    t.dangerous * 0.06 +
-    t.possession * 0.025
-  );
-}
-
-function chooseSide(home, away) {
-  const h = sideScore(home);
-  const a = sideScore(away);
-
-  if (h >= a + 3) return "Ev";
-  if (a >= h + 3) return "Deplasman";
-  return "Dengeli";
-}
-
-function pressureScore(total, minute, totalGoals, momentum) {
+function teamPressure(t, minute) {
   let score = 0;
 
-  score += total.shots * 0.25;
-  score += total.shotsOn * 1.35;
-  score += total.shotsOff * 0.25;
-  score += total.insideBox * 0.55;
-  score += total.corners * 0.75;
-  score += total.dangerous * 0.06;
+  score += t.shots * 0.30;
+  score += t.shotsOn * 1.45;
+  score += t.shotsOff * 0.25;
+  score += t.insideBox * 0.60;
+  score += t.corners * 0.80;
+  score += t.dangerous * 0.065;
+  score += t.possession * 0.025;
 
-  if (minute >= 30 && minute <= 42 && totalGoals === 0) score += 1.3;
-  if (minute >= 55 && minute <= 70) score += 1.5;
-
-  if (total.shots >= 10) score += 0.7;
-  if (total.shotsOn >= 3) score += 0.8;
-  if (total.shotsOn >= 4) score += 1.1;
-  if (total.corners >= 3) score += 0.5;
-  if (total.corners >= 4) score += 0.8;
-  if (total.dangerous >= 30) score += 0.8;
-
-  if (momentum) {
-    if (momentum.shotsOn >= 1) score += 0.7;
-    if (momentum.corners >= 1) score += 0.5;
-    if (momentum.shots >= 2) score += 0.4;
-    if (momentum.dangerous >= 5) score += 0.5;
-  }
+  if (t.shotsOn >= 3) score += 0.7;
+  if (t.corners >= 3) score += 0.5;
+  if (minute >= 30 && minute <= 44) score += 0.4;
+  if (minute >= 55 && minute <= 75) score += 0.6;
 
   return Number(score.toFixed(1));
 }
 
-function momentumLabel(momentum) {
-  if (!momentum) return "İlk ölçüm";
+function totalPressure(total, minute) {
+  let score = 0;
 
-  const points =
-    momentum.shots * 0.6 +
-    momentum.shotsOn * 1.5 +
-    momentum.corners * 1.1 +
-    momentum.dangerous * 0.12;
+  score += total.shots * 0.25;
+  score += total.shotsOn * 1.30;
+  score += total.shotsOff * 0.20;
+  score += total.insideBox * 0.55;
+  score += total.corners * 0.70;
+  score += total.dangerous * 0.06;
 
-  if (points >= 4) return "🔥 Çok güçlü";
-  if (points >= 2) return "🟢 Güçlü";
-  if (points >= 1) return "🟡 Orta";
-  return "🔴 Zayıf";
+  if (total.shots >= 10) score += 0.6;
+  if (total.shotsOn >= 4) score += 0.9;
+  if (total.corners >= 4) score += 0.7;
+  if (minute >= 30 && minute <= 44) score += 0.7;
+  if (minute >= 55 && minute <= 75) score += 0.9;
+
+  return Number(score.toFixed(1));
+}
+
+function momentumScore(delta) {
+  if (!delta) return 0;
+
+  const score =
+    delta.shots * 0.6 +
+    delta.shotsOn * 1.6 +
+    delta.corners * 1.2 +
+    delta.insideBox * 0.8 +
+    delta.dangerous * 0.12;
+
+  return Number(score.toFixed(1));
+}
+
+function momentumLabel(score) {
+  if (score >= 5) return "🔥 Çok güçlü";
+  if (score >= 3) return "🟢 Güçlü";
+  if (score >= 1.5) return "🟡 Orta";
+  if (score > 0) return "🔴 Zayıf";
+  return "İlk ölçüm";
 }
 
 function dataConfidence(total) {
@@ -258,86 +206,263 @@ function dataConfidence(total) {
   if (total.dangerous > 0) score++;
   else notes.push("Tehlikeli atak API’de 0 görünüyor");
 
-  if (score >= 4) return { label: "Yüksek", notes: "Veriler yeterli" };
-  if (score >= 2) return { label: "Orta", notes: notes.join(", ") };
-  return { label: "Düşük", notes: notes.join(", ") || "API verisi yetersiz" };
+  if (score >= 4) return { label: "Yüksek", note: "Veriler yeterli" };
+  if (score >= 2) return { label: "Orta", note: notes.join(", ") };
+  return { label: "Düşük", note: notes.join(", ") || "API verisi yetersiz" };
 }
 
-function signalLevel(score) {
-  if (score >= MIN_ELITE) return "💰🔥 ELITE";
-  if (score >= MIN_NORMAL) return "💰🟢 NORMAL";
-  if (score >= MIN_RADAR) return "⚠️ RADAR";
-  return null;
+function leadingSide(homePressure, awayPressure) {
+  if (homePressure >= awayPressure + 2.5) return "Ev";
+  if (awayPressure >= homePressure + 2.5) return "Deplasman";
+  return "Dengeli";
 }
 
-function kararMotoru({ minute, totalGoals, market, score, total, side, momentum, dataConf }) {
-  const need = kalanGol(market, totalGoals);
+function neededGoalsForMarket(market, homeGoals, awayGoals) {
+  const total = homeGoals + awayGoals;
+
+  if (market === "İlk Yarı 0.5 ÜST") return Math.max(0, 1 - total);
+  if (market === "İlk Yarı 1.5 ÜST") return Math.max(0, 2 - total);
+
+  if (market === "İlk Yarı Ev 0.5 ÜST") return Math.max(0, 1 - homeGoals);
+  if (market === "İlk Yarı Ev 1.5 ÜST") return Math.max(0, 2 - homeGoals);
+  if (market === "İlk Yarı Dep 0.5 ÜST") return Math.max(0, 1 - awayGoals);
+  if (market === "İlk Yarı Dep 1.5 ÜST") return Math.max(0, 2 - awayGoals);
+
+  if (market === "Maç Sonu 0.5 ÜST") return Math.max(0, 1 - total);
+  if (market === "Maç Sonu 1.5 ÜST") return Math.max(0, 2 - total);
+  if (market === "Maç Sonu 2.5 ÜST") return Math.max(0, 3 - total);
+  if (market === "Maç Sonu 3.5 ÜST") return Math.max(0, 4 - total);
+
+  if (market === "Sıradaki Gol Ev") return 1;
+  if (market === "Sıradaki Gol Deplasman") return 1;
+
+  return 99;
+}
+
+function marketCandidates({
+  minute,
+  homeGoals,
+  awayGoals,
+  totalGoals,
+  homePressure,
+  awayPressure,
+  totalPress,
+  side,
+  momentum,
+  homeStats,
+  awayStats,
+  totalStats
+}) {
+  const markets = [];
+
+  const add = (name, baseScore, reason) => {
+    markets.push({
+      name,
+      score: Number(baseScore.toFixed(1)),
+      reason
+    });
+  };
+
+  const homeStrong = homePressure >= 8.5 && homePressure >= awayPressure + 2.0;
+  const awayStrong = awayPressure >= 8.5 && awayPressure >= homePressure + 2.0;
+
+  // 0-45: İlk yarı marketleri
+  if (minute >= 1 && minute <= 45) {
+    if (totalGoals === 0 && minute >= 18 && minute <= 42 && totalPress >= 7) {
+      add(
+        "İlk Yarı 0.5 ÜST",
+        totalPress + momentum,
+        "İlk yarıda gol için baskı ve tempo var"
+      );
+    }
+
+    if (totalGoals === 1 && minute >= 20 && minute <= 40 && totalPress >= 9.5) {
+      add(
+        "İlk Yarı 1.5 ÜST",
+        totalPress + momentum - 0.8,
+        "İlk yarıda ikinci gol için tempo yüksek"
+      );
+    }
+
+    if (homeGoals === 0 && minute >= 15 && minute <= 42 && homeStrong) {
+      add(
+        "İlk Yarı Ev 0.5 ÜST",
+        homePressure + momentum,
+        "Ev sahibi baskısı ilk yarı gol için öne çıkıyor"
+      );
+    }
+
+    if (awayGoals === 0 && minute >= 15 && minute <= 42 && awayStrong) {
+      add(
+        "İlk Yarı Dep 0.5 ÜST",
+        awayPressure + momentum,
+        "Deplasman baskısı ilk yarı gol için öne çıkıyor"
+      );
+    }
+
+    if (homeGoals <= 1 && minute >= 20 && minute <= 40 && homePressure >= 11.5) {
+      add(
+        "İlk Yarı Ev 1.5 ÜST",
+        homePressure + momentum - 1.0,
+        "Ev sahibi çok baskılı, ilk yarıda 2. gol ihtimali aranıyor"
+      );
+    }
+
+    if (awayGoals <= 1 && minute >= 20 && minute <= 40 && awayPressure >= 11.5) {
+      add(
+        "İlk Yarı Dep 1.5 ÜST",
+        awayPressure + momentum - 1.0,
+        "Deplasman çok baskılı, ilk yarıda 2. gol ihtimali aranıyor"
+      );
+    }
+  }
+
+  // 45-90: Maç sonu marketleri
+  if (minute >= 46 && minute <= 90) {
+    if (totalGoals === 0 && minute <= 80 && totalPress >= 7.5) {
+      add(
+        "Maç Sonu 0.5 ÜST",
+        totalPress + momentum,
+        "Maçta ilk gol için baskı oluşuyor"
+      );
+    }
+
+    if (totalGoals <= 1 && minute <= 78 && totalPress >= 8.5) {
+      add(
+        "Maç Sonu 1.5 ÜST",
+        totalPress + momentum,
+        "Maç sonu 1.5 üst için tempo yeterli"
+      );
+    }
+
+    if (totalGoals === 2 && minute <= 80 && totalPress >= 8.8) {
+      add(
+        "Maç Sonu 2.5 ÜST",
+        totalPress + momentum,
+        "Bir gol daha gerekiyor, maç baskılı"
+      );
+    }
+
+    if (totalGoals === 3 && minute <= 75 && totalPress >= 10) {
+      add(
+        "Maç Sonu 3.5 ÜST",
+        totalPress + momentum - 0.5,
+        "Dördüncü gol için tempo yüksek"
+      );
+    }
+
+    if (homeStrong && minute <= 85) {
+      add(
+        "Sıradaki Gol Ev",
+        homePressure + momentum,
+        "Ev sahibi baskısı sıradaki gol için önde"
+      );
+    }
+
+    if (awayStrong && minute <= 85) {
+      add(
+        "Sıradaki Gol Deplasman",
+        awayPressure + momentum,
+        "Deplasman baskısı sıradaki gol için önde"
+      );
+    }
+  }
+
+  return markets.sort((a, b) => b.score - a.score);
+}
+
+function decisionForBestMarket({
+  best,
+  minute,
+  homeGoals,
+  awayGoals,
+  totalGoals,
+  totalStats,
+  side,
+  momentumScoreValue,
+  dataConf
+}) {
+  if (!best) {
+    return {
+      send: false,
+      level: "PAS",
+      karar: "❌ PAS",
+      risk: "Yüksek",
+      stake: "Girme",
+      comment: "Uygun market bulunmadı."
+    };
+  }
+
+  const need = neededGoalsForMarket(best.name, homeGoals, awayGoals);
   const reasons = [];
   const risks = [];
 
-  if (!market) {
-    return { send: false, karar: "❌ PAS", risk: "Yüksek", stake: "Girme", neden: "Uygun market yok." };
-  }
-
-  if (minute < 25 || minute > 75) {
-    return { send: false, karar: "❌ PAS", risk: "Yüksek", stake: "Girme", neden: "Dakika aralığı uygun değil." };
-  }
-
-  if (minute >= 60 && totalGoals === 0 && market !== "Maç Sonu 1.5 ÜST") {
-    return { send: false, karar: "❌ PAS", risk: "Yüksek", stake: "Girme", neden: "60+ 0-0 iken yüksek over riskli." };
-  }
-
-  if (minute >= 65 && need >= 2) {
-    return { send: false, karar: "❌ PAS", risk: "Yüksek", stake: "Girme", neden: "Dakika ilerledi ve 2+ gol gerekiyor." };
-  }
-
-  if (score >= 10.5) reasons.push("Baskı skoru yüksek");
-  if (total.shots >= 10) reasons.push("Toplam şut yüksek");
-  if (total.shotsOn >= 3) reasons.push("İsabetli şut var");
-  if (total.corners >= 3) reasons.push("Korner baskısı var");
-  if (total.dangerous >= 20) reasons.push("Tehlikeli atak desteği var");
+  if (best.score >= MIN_ELITE) reasons.push("Market skoru elite seviyede");
+  if (totalStats.shots >= 8) reasons.push("Şut hacmi iyi");
+  if (totalStats.shotsOn >= 3) reasons.push("İsabetli şut desteği var");
+  if (totalStats.corners >= 3) reasons.push("Korner baskısı var");
+  if (totalStats.insideBox >= 4) reasons.push("Ceza sahası içi deneme var");
+  if (totalStats.dangerous >= 20) reasons.push("Tehlikeli atak desteği var");
+  if (momentumScoreValue >= 3) reasons.push("Son tur momentum artışı var");
   if (side !== "Dengeli") reasons.push("Baskı yönü net");
 
-  if (momentum && (momentum.shotsOn >= 1 || momentum.corners >= 1 || momentum.dangerous >= 5)) {
-    reasons.push("Son turda momentum artışı var");
+  if (dataConf.label === "Düşük") risks.push("Veri güveni düşük");
+  if (totalStats.dangerous === 0) risks.push("Tehlikeli atak verisi 0; API eksik gösterebilir");
+  if (need >= 2 && minute >= 65) risks.push("Dakika ilerledi, 2+ gol gerekiyor");
+  if (side === "Dengeli" && best.name.includes("Sıradaki Gol")) risks.push("Sıradaki gol için taraf net değil");
+
+  if (need >= 3) {
+    return {
+      send: false,
+      level: "PAS",
+      karar: "❌ PAS",
+      risk: "Çok yüksek",
+      stake: "Girme",
+      comment: "Bu market için çok fazla gol gerekiyor."
+    };
   }
 
-  if (dataConf.label === "Düşük") risks.push("Veri güveni düşük");
-  if (side === "Dengeli") risks.push("Tek taraflı baskı net değil");
-  if (need >= 2) risks.push("Gereken gol sayısı fazla");
-  if (total.dangerous === 0) risks.push("Tehlikeli atak API’de 0; veri eksik olabilir");
-
-  if (score >= MIN_ELITE && need <= 1 && side !== "Dengeli" && dataConf.label !== "Düşük") {
+  if (best.score >= MIN_ELITE && need <= 1 && dataConf.label !== "Düşük") {
     return {
       send: true,
+      level: "💰🔥 ELITE",
       karar: "✅ GİRİLEBİLİR",
       risk: risks.length ? "Orta" : "Orta-düşük",
       stake: "%1 - %2 kasa",
-      neden: reasons.join(", ") || "Elite şartlar sağlandı."
+      comment: `${best.reason}. ${reasons.join(", ")}${risks.length ? ". Risk: " + risks.join(", ") : ""}`
     };
   }
 
-  if (score >= MIN_NORMAL && need <= 1) {
+  if (best.score >= MIN_GIR && need <= 1) {
     return {
       send: true,
+      level: "💰🟢 NORMAL",
       karar: "⚠️ KONTROLLÜ / DÜŞÜK STAKE",
       risk: "Orta-yüksek",
       stake: "%0.5 - %1 kasa",
-      neden: `${reasons.join(", ") || "Baskı var"}${risks.length ? ". Risk: " + risks.join(", ") : ""}`
+      comment: `${best.reason}. ${reasons.join(", ")}${risks.length ? ". Risk: " + risks.join(", ") : ""}`
     };
   }
 
-  if (score >= MIN_RADAR) {
+  if (best.score >= MIN_RADAR) {
     return {
       send: true,
+      level: "⚠️ RADAR",
       karar: "👀 İZLE",
       risk: "Orta",
       stake: "Girme, takip et",
-      neden: `${reasons.join(", ") || "Maç ısınıyor"}${risks.length ? ". Risk: " + risks.join(", ") : ""}`
+      comment: `${best.reason}. ${reasons.join(", ")}${risks.length ? ". Risk: " + risks.join(", ") : ""}`
     };
   }
 
-  return { send: false, karar: "❌ PAS", risk: "Yüksek", stake: "Girme", neden: "Baskı yeterli değil." };
+  return {
+    send: false,
+    level: "PAS",
+    karar: "❌ PAS",
+    risk: "Yüksek",
+    stake: "Girme",
+    comment: "Baskı ve market skoru yeterli değil."
+  };
 }
 
 function shouldSend(key, minutes = 12) {
@@ -348,7 +473,7 @@ function shouldSend(key, minutes = 12) {
 }
 
 async function analyze() {
-  console.log("🔎 Detaylı tarama başladı...");
+  console.log("🔎 LIVE INTELLIGENCE taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -358,7 +483,7 @@ async function analyze() {
       const league = m.league.name || "";
 
       if (!minute) return false;
-      if (minute < 25 || minute > 75) return false;
+      if (minute < 1 || minute > 90) return false;
       if (badLeague(league)) return false;
 
       return true;
@@ -377,7 +502,7 @@ async function analyze() {
 
     const minute = m.fixture.status.elapsed;
 
-    if (!minute || minute < 25 || minute > 75) {
+    if (!minute || minute < 1 || minute > 90) {
       pas++;
       continue;
     }
@@ -390,13 +515,6 @@ async function analyze() {
     const homeGoals = Number(m.goals.home || 0);
     const awayGoals = Number(m.goals.away || 0);
     const totalGoals = homeGoals + awayGoals;
-
-    const market = selectMarket(minute, totalGoals);
-
-    if (!market) {
-      pas++;
-      continue;
-    }
 
     const stats = await getStats(m.fixture.id);
 
@@ -412,27 +530,42 @@ async function analyze() {
     const totalStats = combine(homeStats, awayStats);
 
     const old = memory.get(m.fixture.id);
-    const momentum = old ? diff(totalStats, old.totalStats) : null;
+    const momentumDelta = old ? diff(totalStats, old.totalStats) : null;
     memory.set(m.fixture.id, { totalStats, minute });
 
-    const side = chooseSide(homeStats, awayStats);
+    const homePress = teamPressure(homeStats, minute);
+    const awayPress = teamPressure(awayStats, minute);
+    const totalPress = totalPressure(totalStats, minute);
+    const side = leadingSide(homePress, awayPress);
+    const momScore = momentumScore(momentumDelta);
     const dataConf = dataConfidence(totalStats);
-    const score = pressureScore(totalStats, minute, totalGoals, momentum);
-    const level = signalLevel(score);
 
-    if (!level) {
-      pas++;
-      continue;
-    }
-
-    const decision = kararMotoru({
+    const markets = marketCandidates({
       minute,
+      homeGoals,
+      awayGoals,
       totalGoals,
-      market,
-      score,
-      total: totalStats,
+      homePressure: homePress,
+      awayPressure: awayPress,
+      totalPress,
       side,
-      momentum,
+      momentum: momScore,
+      homeStats,
+      awayStats,
+      totalStats
+    });
+
+    const best = markets[0];
+
+    const decision = decisionForBestMarket({
+      best,
+      minute,
+      homeGoals,
+      awayGoals,
+      totalGoals,
+      totalStats,
+      side,
+      momentumScoreValue: momScore,
       dataConf
     });
 
@@ -441,51 +574,75 @@ async function analyze() {
       continue;
     }
 
-    const need = kalanGol(market, totalGoals);
+    const need = neededGoalsForMarket(best.name, homeGoals, awayGoals);
 
-    const key = `${m.fixture.id}_${decision.karar}_${market}`;
-    if (!shouldSend(key, decision.karar.includes("GİR") ? 15 : 12)) continue;
+    const key = `${m.fixture.id}_${best.name}_${decision.karar}`;
+    if (!shouldSend(key, decision.karar.includes("GİR") ? 15 : 10)) continue;
+
+    const topMarkets = markets
+      .slice(0, 3)
+      .map((x, i) => `${i + 1}) ${x.name} | Skor: ${x.score}`)
+      .join("\n");
 
     const msg = `
-${level} <b>SİNYAL</b>
+${decision.level} <b>CANLI DERİN ANALİZ</b>
 
 ⚽ <b>${homeName} - ${awayName}</b>
 🌍 <b>${country} / ${league}</b>
 ⏱ <b>Dakika:</b> ${minute}
 📊 <b>Skor:</b> ${homeGoals}-${awayGoals}
 
-🎯 <b>Market:</b> ${market}
+🎯 <b>Önerilen Market:</b> ${best.name}
 🥅 <b>Gereken Gol:</b> ${need}
-➡️ <b>Yön:</b> ${side}
+➡️ <b>Baskı Yönü:</b> ${side}
 
-📈 <b>Baskı Skoru:</b> ${score}/10
-🧭 <b>Momentum:</b> ${momentumLabel(momentum)}
-🛡 <b>Veri Güveni:</b> ${dataConf.label}
-📌 <b>Veri Notu:</b> ${dataConf.notes}
+<b>BASKI OKUMASI</b>
+🏠 Ev Baskı: ${homePress}/10
+✈️ Dep Baskı: ${awayPress}/10
+📈 Toplam Baskı: ${totalPress}/10
+🧭 Momentum: ${momentumLabel(momScore)} (${momScore})
+🛡 Veri Güveni: ${dataConf.label}
+📌 Veri Notu: ${dataConf.note}
 
-<b>GENEL İSTATİSTİK</b>
-📍 Şut: ${totalStats.shots}
-🎯 İsabetli Şut: ${totalStats.shotsOn}
-📤 İsabetsiz Şut: ${totalStats.shotsOff}
-🧱 Bloklanan Şut: ${totalStats.blocked}
-📦 Ceza Sahası İçi Şut: ${totalStats.insideBox}
-🚩 Korner: ${totalStats.corners}
-⚡ Tehlikeli Atak: ${totalStats.dangerous}
-🟨 Sarı Kart: ${totalStats.yellow}
-🟥 Kırmızı Kart: ${totalStats.red}
+<b>EV SAHİBİ İSTATİSTİK</b>
+📍 Şut: ${homeStats.shots}
+🎯 İsabet: ${homeStats.shotsOn}
+📤 İsabetsiz: ${homeStats.shotsOff}
+📦 Ceza İçi Şut: ${homeStats.insideBox}
+🚩 Korner: ${homeStats.corners}
+⚡ Tehlikeli Atak: ${homeStats.dangerous}
+🟨 Sarı: ${homeStats.yellow}
+🟥 Kırmızı: ${homeStats.red}
+⚽ Topa Sahip Olma: ${homeStats.possession}%
+
+<b>DEPLASMAN İSTATİSTİK</b>
+📍 Şut: ${awayStats.shots}
+🎯 İsabet: ${awayStats.shotsOn}
+📤 İsabetsiz: ${awayStats.shotsOff}
+📦 Ceza İçi Şut: ${awayStats.insideBox}
+🚩 Korner: ${awayStats.corners}
+⚡ Tehlikeli Atak: ${awayStats.dangerous}
+🟨 Sarı: ${awayStats.yellow}
+🟥 Kırmızı: ${awayStats.red}
+⚽ Topa Sahip Olma: ${awayStats.possession}%
 
 <b>SON TUR MOMENTUM</b>
-📍 Şut Artışı: ${momentum ? momentum.shots : "İlk ölçüm"}
-🎯 İsabet Artışı: ${momentum ? momentum.shotsOn : "İlk ölçüm"}
-🚩 Korner Artışı: ${momentum ? momentum.corners : "İlk ölçüm"}
-⚡ Tehlikeli Atak Artışı: ${momentum ? momentum.dangerous : "İlk ölçüm"}
+📍 Şut Artışı: ${momentumDelta ? momentumDelta.shots : "İlk ölçüm"}
+🎯 İsabet Artışı: ${momentumDelta ? momentumDelta.shotsOn : "İlk ölçüm"}
+🚩 Korner Artışı: ${momentumDelta ? momentumDelta.corners : "İlk ölçüm"}
+⚡ Tehlikeli Atak Artışı: ${momentumDelta ? momentumDelta.dangerous : "İlk ölçüm"}
+
+<b>EN İYİ MARKETLER</b>
+${topMarkets}
 
 🧠 <b>NET KARAR:</b> ${decision.karar}
 ⚠️ <b>Risk:</b> ${decision.risk}
 💰 <b>Stake:</b> ${decision.stake}
-📝 <b>Neden:</b> ${decision.neden}
 
-⚠️ <b>Not:</b> Garanti değildir. Kasa yönetimi şart.
+📝 <b>Bot Yorumu:</b>
+${decision.comment}
+
+⚠️ <b>Not:</b> Garanti değildir. Tek maça yüksek kasa riski alma.
 `;
 
     await sendTelegram(msg);
@@ -497,9 +654,9 @@ ${level} <b>SİNYAL</b>
   );
 }
 
-console.log("🤖 MEZBAHANE DETAIL PRO AKTİF ✅");
+console.log("🤖 MEZBAHANE LIVE INTELLIGENCE AKTİF ✅");
 await sendTelegram(
-  "🤖 MEZBAHANE DETAIL PRO AKTİF ✅\nAPI dostu detaylı momentum + karar sistemi çalışıyor."
+  "🤖 MEZBAHANE LIVE INTELLIGENCE AKTİF ✅\n0-90 canlı derin analiz + market seçimi çalışıyor."
 );
 
 await analyze();
