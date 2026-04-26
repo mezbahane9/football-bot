@@ -6,17 +6,36 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || 180);
-const MAX_MATCHES = Number(process.env.MAX_MATCHES_PER_ROUND || 40);
+const MAX_MATCHES = Number(process.env.MAX_MATCHES_PER_ROUND || 30);
 
 const MIN_RADAR = Number(process.env.MIN_RADAR || 4.0);
 const MIN_NORMAL = Number(process.env.MIN_NORMAL || 5.3);
 const MIN_ELITE = Number(process.env.MIN_ELITE || 7.0);
 const MIN_VALUE = Number(process.env.MIN_VALUE || 1.3);
-
 const DEFAULT_ODDS = Number(process.env.DEFAULT_ODDS || 1.80);
 
 let memory = {};
 let lastSent = {};
+
+const GOOD_COUNTRIES = [
+  "Turkey",
+  "England",
+  "Spain",
+  "Italy",
+  "Germany",
+  "France",
+  "Netherlands",
+  "Portugal",
+  "Belgium",
+  "Austria",
+  "Switzerland",
+  "Denmark",
+  "Norway",
+  "Sweden",
+  "Brazil",
+  "Argentina",
+  "USA"
+];
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -41,25 +60,20 @@ function badLeague(name = "") {
     "Women", "Friendly", "Club Friendlies",
     "Amateur", "Regional"
   ];
-
   return bad.some(x => name.toLowerCase().includes(x.toLowerCase()));
 }
 
 function getStat(stats, type) {
   const raw = stats.find(s => s.type === type)?.value;
-
   if (raw === null || raw === undefined) return 0;
-
   if (typeof raw === "string" && raw.includes("%")) {
     return Number(raw.replace("%", "")) || 0;
   }
-
   return Number(raw) || 0;
 }
 
 function extractStats(teamStats) {
   const s = teamStats?.statistics || [];
-
   return {
     shots: getStat(s, "Total Shots"),
     shotsOn: getStat(s, "Shots on Goal"),
@@ -146,7 +160,7 @@ function confidence(minute, homeGoals, awayGoals, t, side) {
 function selectMarket(minute, homeGoals, awayGoals, side) {
   const goals = homeGoals + awayGoals;
 
-  if (minute >= 12 && minute <= 45) {
+  if (minute >= 15 && minute <= 45) {
     if (goals === 0) return "İlk Yarı 0.5 ÜST";
     if (goals === 1 && minute <= 42) return "İlk Yarı 1.5 ÜST";
   }
@@ -185,7 +199,6 @@ function valuePercent(botProb, bookProb) {
 function matchPriority(m) {
   const minute = m.fixture.status.elapsed || 0;
   const goals = Number(m.goals.home || 0) + Number(m.goals.away || 0);
-
   let score = 0;
 
   if (minute >= 15 && minute <= 42 && goals === 0) score += 5;
@@ -199,9 +212,7 @@ async function fetchLiveMatches() {
   try {
     const liveRes = await axios.get(
       "https://v3.football.api-sports.io/fixtures?live=all",
-      {
-        headers: { "x-apisports-key": API_KEY }
-      }
+      { headers: { "x-apisports-key": API_KEY } }
     );
 
     const matches = liveRes.data.response || [];
@@ -210,16 +221,18 @@ async function fetchLiveMatches() {
       .filter(m => {
         const minute = m.fixture.status.elapsed;
         const league = m.league.name || "";
+        const country = m.league.country || "";
 
-        if (!minute || minute < 10 || minute > 90) return false;
+        if (!minute || minute < 15 || minute > 90) return false;
         if (badLeague(league)) return false;
+        if (!GOOD_COUNTRIES.includes(country)) return false;
 
         return true;
       })
       .sort((a, b) => matchPriority(b) - matchPriority(a))
       .slice(0, MAX_MATCHES);
 
-    console.log(`API TEST: ${matches.length} canlı maç | İncelenecek: ${filteredMatches.length}`);
+    console.log(`API TEST: ${matches.length} canlı maç | Kaliteli filtre: ${filteredMatches.length}`);
 
     let statsBakildi = 0;
     let statsYok = 0;
@@ -232,6 +245,7 @@ async function fetchLiveMatches() {
       const id = m.fixture.id;
       const minute = m.fixture.status.elapsed;
       const league = m.league.name;
+      const country = m.league.country;
       const home = m.teams.home.name;
       const away = m.teams.away.name;
       const homeGoals = Number(m.goals.home || 0);
@@ -241,9 +255,7 @@ async function fetchLiveMatches() {
 
       const statsRes = await axios.get(
         `https://v3.football.api-sports.io/fixtures/statistics?fixture=${id}`,
-        {
-          headers: { "x-apisports-key": API_KEY }
-        }
+        { headers: { "x-apisports-key": API_KEY } }
       );
 
       const stats = statsRes.data.response || [];
@@ -296,7 +308,7 @@ async function fetchLiveMatches() {
 ⚠️ <b>RADAR TAKİP</b>
 
 <b>Maç:</b> ${home} - ${away}
-<b>Lig:</b> ${league}
+<b>Ülke/Lig:</b> ${country} / ${league}
 <b>Dakika:</b> ${minute}
 <b>Skor:</b> ${homeGoals}-${awayGoals}
 <b>Market Adayı:</b> ${market}
@@ -317,7 +329,6 @@ Maç ısınıyor. Henüz net giriş değil ama baskı oluşmaya başladı.
       }
 
       const type = signalType(conf);
-
       if (!type) continue;
 
       const botProb = botProbability(conf);
@@ -337,7 +348,7 @@ Maç ısınıyor. Henüz net giriş değil ama baskı oluşmaya başladı.
 💰 ${type} <b>GİR</b>
 
 <b>Maç:</b> ${home} - ${away}
-<b>Lig:</b> ${league}
+<b>Ülke/Lig:</b> ${country} / ${league}
 <b>Dakika:</b> ${minute}
 <b>Skor:</b> ${homeGoals}-${awayGoals}
 <b>Market:</b> ${market}
@@ -361,10 +372,10 @@ Maç ısınıyor. Henüz net giriş değil ama baskı oluşmaya başladı.
   }
 }
 
-console.log("💰 PARA MODU + RADAR + STATS SKIP aktif...");
+console.log("💰 KALİTELİ LİG + PARA MODU + STATS SKIP aktif...");
 
 setTimeout(() => {
-  sendTelegram("✅ PARA MODU + RADAR + STATS SKIP aktif.")
+  sendTelegram("✅ KALİTELİ LİG + PARA MODU aktif.")
     .then(() => console.log("Telegram test mesajı gönderildi."))
     .catch(err => console.log("Telegram test hatası:", err.response?.data || err.message));
 }, 10000);
