@@ -93,8 +93,8 @@ function absolutePressureScore(t, minute, goals) {
   s += t.corners * 0.45;
   s += t.dangerous * 0.035;
 
-  if (minute >= 20 && minute <= 42 && goals === 0) s += 1.2;
-  if (minute >= 55 && minute <= 80) s += 0.9;
+  if (minute >= 20 && minute <= 40 && goals === 0) s += 1.2;
+  if (minute >= 55 && minute <= 72) s += 0.9;
   if (t.shotsOn >= 3) s += 0.8;
   if (t.corners >= 4) s += 0.5;
   if (t.dangerous >= 35) s += 0.7;
@@ -105,6 +105,7 @@ function absolutePressureScore(t, minute, goals) {
 function chooseSide(home, away) {
   const h = pressureScore(home);
   const a = pressureScore(away);
+
   if (h >= a + 2.5) return "Ev";
   if (a >= h + 2.5) return "Deplasman";
   return "Dengeli";
@@ -113,16 +114,15 @@ function chooseSide(home, away) {
 function selectMarket(minute, homeGoals, awayGoals, side) {
   const goals = homeGoals + awayGoals;
 
-  if (minute >= 12 && minute <= 45) {
+  if (minute >= 15 && minute <= 45) {
     if (goals === 0) return "İlk Yarı 0.5 ÜST";
-    if (goals === 1 && minute <= 42) return "İlk Yarı 1.5 ÜST";
+    if (goals === 1 && minute <= 40) return "İlk Yarı 1.5 ÜST";
   }
 
-  if (minute >= 46 && minute <= 90) {
+  if (minute >= 46 && minute <= 75) {
     if (goals <= 1) return "Maç Sonu 1.5 ÜST";
     if (goals === 2) return "Maç Sonu 2.5 ÜST";
-    if (goals === 3) return "Maç Sonu 3.5 ÜST";
-    if (goals === 4) return "Maç Sonu 4.5 ÜST";
+    if (goals === 3 && minute <= 70) return "Maç Sonu 3.5 ÜST";
   }
 
   if (side === "Ev") return "Sıradaki Gol Ev";
@@ -154,8 +154,9 @@ function matchPriority(m) {
   const goals = Number(m.goals.home || 0) + Number(m.goals.away || 0);
 
   let score = 0;
-  if (minute >= 15 && minute <= 42 && goals === 0) score += 5;
-  if (minute >= 55 && minute <= 80) score += 4;
+
+  if (minute >= 18 && minute <= 40 && goals === 0) score += 6;
+  if (minute >= 55 && minute <= 72) score += 5;
   if (goals <= 2) score += 2;
 
   return score;
@@ -174,7 +175,7 @@ async function fetchLiveMatches() {
         const minute = m.fixture.status.elapsed;
         const league = m.league.name || "";
 
-        if (!minute || minute < 12 || minute > 90) return false;
+        if (!minute || minute < 15 || minute > 75) return false;
         if (badLeague(league)) return false;
 
         return true;
@@ -182,7 +183,7 @@ async function fetchLiveMatches() {
       .sort((a, b) => matchPriority(b) - matchPriority(a))
       .slice(0, MAX_MATCHES);
 
-    console.log(`API TEST: ${matches.length} canlı maç | İncelenecek: ${filteredMatches.length}`);
+    console.log(`API TEST: ${matches.length} canlı maç | 15-75 filtre: ${filteredMatches.length}`);
 
     let statsBakildi = 0;
     let statsYok = 0;
@@ -266,7 +267,7 @@ async function fetchLiveMatches() {
 🔥 <b>Value:</b> %${value}
 
 🤖 <b>Bot Görüşü:</b>
-Maç ısınmış görünüyor. Henüz net giriş değil ama takip edilmeli.
+Maç ısınıyor ama henüz net giriş değil. İzlemede kal.
 `);
         }
 
@@ -300,7 +301,7 @@ Maç ısınmış görünüyor. Henüz net giriş değil ama takip edilmeli.
 📉 <b>Book İhtimal:</b> %${bookProb}
 🔥 <b>Value:</b> %${value} ✅
 
-⚠️ <b>Not:</b> Risk içerir. Küçük stake ile takip et.
+⚠️ <b>Not:</b> 75+ geç sinyal kesildi. Küçük stake ile takip et.
 `);
     }
 
@@ -313,10 +314,10 @@ Maç ısınmış görünüyor. Henüz net giriş değil ama takip edilmeli.
   }
 }
 
-console.log("💰 FINAL SİNYAL BOTU + ABSOLUTE PRESSURE aktif...");
+console.log("💰 GEÇ KALMAYAN PROFESYONEL SİNYAL BOTU aktif...");
 
 setTimeout(() => {
-  sendTelegram("✅ FINAL SİNYAL BOTU aktif.")
+  sendTelegram("✅ GEÇ KALMAYAN PROFESYONEL SİNYAL BOTU aktif.")
     .then(() => console.log("Telegram test mesajı gönderildi."))
     .catch(err => console.log("Telegram test hatası:", err.response?.data || err.message));
 }, 10000);
