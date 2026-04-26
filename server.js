@@ -11,6 +11,9 @@ const MIN_EARLY = 7.4;
 const MIN_NORMAL = 8.0;
 const MIN_ELITE = 8.7;
 
+// Şimdilik test oranı
+const DEFAULT_ODDS = Number(process.env.DEFAULT_ODDS || 1.80);
+
 let memory = {};
 let lastSent = {};
 let activeSignals = {};
@@ -107,7 +110,6 @@ function chooseSide(homeDiff, awayDiff) {
 }
 
 function validMomentum(totalDiff) {
-  // Erken sistem: biraz daha erken yakalar
   if (totalDiff.shots < 2) return false;
   if (totalDiff.shotsOn < 1 && totalDiff.corners < 1) return false;
   if (totalDiff.dangerous < 6) return false;
@@ -171,24 +173,37 @@ function selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant) {
   return null;
 }
 
-function botView(type, dominant, totalDiff) {
+function signalType(conf) {
+  if (conf >= MIN_ELITE) return "🔥 ELITE";
+  if (conf >= MIN_NORMAL) return "🟢 NORMAL";
+  if (conf >= MIN_EARLY) return "⚡ ERKEN";
+  return null;
+}
+
+function probabilityFromConfidence(conf) {
+  // 7.4 güven ≈ %59, 10 güven ≈ %80 civarı
+  return Math.min(80, Math.max(50, Number((conf * 8).toFixed(1))));
+}
+
+function impliedProbability(odds) {
+  return Number((100 / odds).toFixed(1));
+}
+
+function valuePercent(botProb, bookProb) {
+  return Number((botProb - bookProb).toFixed(1));
+}
+
+function botView(type, dominant, totalDiff, value) {
   const sideText =
     dominant.side === "Dengeli"
       ? "İki takımda da tempo yükseldi"
       : `Momentum ${dominant.side} tarafına geçti`;
 
   if (type === "⚡ ERKEN") {
-    return `${sideText}. Erken sinyal: son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. Gol baskısı yeni oluşuyor, oran düşmeden yakalama fırsatı olabilir.`;
+    return `${sideText}. Erken sinyal: son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. Gol baskısı yeni oluşuyor. Value farkı: %${value}.`;
   }
 
-  return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi gol baskısının yükseldiğini gösteriyor.`;
-}
-
-function signalType(conf) {
-  if (conf >= MIN_ELITE) return "🔥 ELITE";
-  if (conf >= MIN_NORMAL) return "🟢 NORMAL";
-  if (conf >= MIN_EARLY) return "⚡ ERKEN";
-  return null;
+  return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi gol baskısının yükseldiğini gösteriyor. Value farkı: %${value}.`;
 }
 
 async function checkPerformance(matches) {
@@ -324,6 +339,12 @@ async function fetchLiveMatches() {
       const type = signalType(conf);
       if (!type) continue;
 
+      const odds = DEFAULT_ODDS;
+      const botProb = probabilityFromConfidence(conf);
+      const bookProb = impliedProbability(odds);
+      const value = valuePercent(botProb, bookProb);
+      const isValue = value >= 5;
+
       const last = lastSent[id] || 0;
       if (Date.now() - last < 10 * 60 * 1000) continue;
 
@@ -340,8 +361,13 @@ ${type} <b>GİR</b>
 <b>Yön:</b> ${dominant.side}
 <b>Güven:</b> ${conf}/10
 
+💰 <b>Oran:</b> ${odds}
+📊 <b>Bot İhtimal:</b> %${botProb}
+📉 <b>Book İhtimal:</b> %${bookProb}
+🔥 <b>Value:</b> %${value} ${isValue ? "✅" : "❌"}
+
 🤖 <b>Bot Görüşü:</b>
-${botView(type, dominant, totalDiff)}
+${botView(type, dominant, totalDiff, value)}
 `;
 
       await sendTelegram(msg);
@@ -360,7 +386,7 @@ ${botView(type, dominant, totalDiff)}
       performance.total++;
 
       console.log(
-        `SİNYAL: ${home} - ${away} | ${type} | ${market} | ${conf}/10`
+        `SİNYAL: ${home} - ${away} | ${type} | ${market} | ${conf}/10 | Value: %${value}`
       );
     }
   } catch (err) {
