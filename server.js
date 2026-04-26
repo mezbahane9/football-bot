@@ -1,154 +1,149 @@
-import axios from "axios";
-import TelegramBot from "node-telegram-bot-api";
+const axios = require("axios");
 
 // ENV
-const API_KEY = process.env.API_FOOTBALL_KEY;
+const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_INTERVAL = Number(process.env.POLL_INTERVAL_MS || 120000);
-const RESULT_INTERVAL = Number(process.env.RESULT_CHECK_INTERVAL_MS || 180000);
+const POLL_INTERVAL = Number(process.env.POLL_INTERVAL) || 180000; // 3 dk
+const MAX_MATCHES = Number(process.env.MAX_MATCHES_PER_ROUND) || 20;
 
-// Telegram
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
+console.log("🤖 BOT + PARA MODU + RADAR + AUTO TRACK AKTİF");
 
-// Sayaçlar
-let stats = {
-  win: 0,
-  lose: 0,
-  total: 0
-};
-
-// Sinyaller (hafızada tutulur)
-let signals = []; 
-/*
-signal objesi:
-{
-  id, fixtureId, home, away,
-  market, line, minute, status: "pending|win|lose",
-  createdAt
-}
-*/
-
-// === API helper ===
-const api = axios.create({
-  baseURL: "https://v3.football.api-sports.io",
-  headers: { "x-apisports-key": API_KEY }
-});
-
-// === ÖRNEK SİNYAL FONKSİYONU (senin botuna bağla) ===
-async function sendSignal({ fixtureId, home, away, minute, market, line }) {
-  const text = `
-🔥 ELITE GİR
-
-Maç: ${home} - ${away}
-Dakika: ${minute}
-Market: ${market} ${line}
-
-⏳ Takip ediliyor...
-`;
-
-  await bot.sendMessage(CHAT_ID, text);
-
-  // Kaydet
-  signals.push({
-    id: Date.now(),
-    fixtureId,
-    home,
-    away,
-    market,   // örn: "OVER"
-    line,     // örn: 2.5
-    minute,
-    status: "pending",
-    createdAt: Date.now()
-  });
-
-  stats.total++;
-}
-
-// === MAÇ SONU KONTROL ===
-async function checkResults() {
-  for (let s of signals) {
-    if (s.status !== "pending") continue;
-
-    try {
-      const res = await api.get(`/fixtures?id=${s.fixtureId}`);
-      const fixture = res.data.response?.[0];
-
-      if (!fixture) continue;
-
-      const isFinished = ["FT", "AET", "PEN"].includes(fixture.fixture.status.short);
-      if (!isFinished) continue;
-
-      const homeGoals = fixture.goals.home;
-      const awayGoals = fixture.goals.away;
-      const totalGoals = homeGoals + awayGoals;
-
-      let result = "lose";
-
-      // Şu an sadece OVER sistemi örnek
-      if (s.market === "OVER") {
-        if (totalGoals > s.line) result = "win";
-      }
-
-      s.status = result;
-
-      if (result === "win") stats.win++;
-      else stats.lose++;
-
-      await bot.sendMessage(CHAT_ID, `
-📊 SONUÇ
-
-Maç: ${s.home} - ${s.away}
-Skor: ${homeGoals}-${awayGoals}
-
-${result === "win" ? "✅ WIN" : "❌ LOSE"}
-
-📈 Win: ${stats.win}
-📉 Lose: ${stats.lose}
-🎯 Winrate: %${((stats.win / stats.total) * 100).toFixed(1)}
-      `);
-
-    } catch (err) {
-      console.log("Result check error:", err.message);
-    }
+// ================= TELEGRAM =================
+async function sendTelegram(msg) {
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: CHAT_ID,
+      text: msg,
+      parse_mode: "HTML"
+    });
+  } catch (err) {
+    console.log("Telegram hata:", err.message);
   }
 }
 
-// === DEMO: CANLI MAÇLARDAN ÖRNEK SİNYAL (test için) ===
-async function fetchLiveAndSendExample() {
+// ================= API =================
+async function getLiveMatches() {
   try {
-    const res = await api.get("/fixtures?live=all");
-    const list = res.data.response;
-
-    if (!list || list.length === 0) return;
-
-    // Basit: 60+ dakika ve 0-2 gibi maç bul
-    const pick = list.find(f =>
-      f.fixture.status.elapsed >= 60 &&
-      (f.goals.home + f.goals.away) >= 2
+    const res = await axios.get(
+      "https://v3.football.api-sports.io/fixtures?live=all",
+      {
+        headers: {
+          "x-apisports-key": API_KEY
+        }
+      }
     );
 
-    if (!pick) return;
+    return res.data.response || [];
+  } catch (err) {
+    const hata = err.response?.data || err.message;
 
-    await sendSignal({
-      fixtureId: pick.fixture.id,
-      home: pick.teams.home.name,
-      away: pick.teams.away.name,
-      minute: pick.fixture.status.elapsed,
-      market: "OVER",
-      line: 2.5
-    });
+    console.log("🚨 API HATA:", hata);
 
-  } catch (e) {
-    console.log("Live fetch error:", e.message);
+    // RATE LIMIT koruma
+    if (JSON.stringify(hata).includes("Too many requests")) {
+      console.log("⏳ Rate limit → bekleniyor...");
+      await new Promise(r => setTimeout(r, 60000));
+    }
+
+    return [];
   }
 }
 
-// === LOOPLAR ===
-setInterval(fetchLiveAndSendExample, POLL_INTERVAL);
-setInterval(checkResults, RESULT_INTERVAL);
+// ================= STATS =================
+async function getStats(fixtureId) {
+  try {
+    const res = await axios.get(
+      `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`,
+      {
+        headers: {
+          "x-apisports-key": API_KEY
+        }
+      }
+    );
 
-// Başlangıç
-bot.sendMessage(CHAT_ID, "🤖 BOT + AUTO WIN TRACK aktif");
-console.log("Bot çalışıyor...");
+    return res.data.response;
+  } catch (err) {
+    return null;
+  }
+}
+
+// ================= BASİT MOMENTUM =================
+function calculatePressure(stats) {
+  try {
+    const home = stats[0].statistics;
+    const away = stats[1].statistics;
+
+    const get = (arr, name) =>
+      arr.find(x => x.type === name)?.value || 0;
+
+    const pressure =
+      get(home, "Shots on Goal") * 2 +
+      get(home, "Shots off Goal") +
+      get(home, "Corner Kicks") * 1.5 +
+      get(home, "Dangerous Attacks") * 0.1;
+
+    return pressure;
+  } catch {
+    return 0;
+  }
+}
+
+// ================= ANA LOOP =================
+async function runBot() {
+  const matches = await getLiveMatches();
+
+  console.log(`⚽ ${matches.length} canlı maç | İncelenecek: ${MAX_MATCHES}`);
+
+  let checked = 0;
+  let signal = 0;
+
+  for (let m of matches.slice(0, MAX_MATCHES)) {
+    const fixture = m.fixture;
+    const teams = m.teams;
+    const goals = m.goals;
+    const minute = m.fixture.status.elapsed;
+
+    const stats = await getStats(fixture.id);
+    if (!stats) continue;
+
+    checked++;
+
+    const pressure = calculatePressure(stats);
+
+    // ================= SİNYAL ŞART =================
+    if (
+      pressure > 10 &&   // momentum
+      minute >= 60 && minute <= 75 && // para zamanı
+      goals.home + goals.away <= 3
+    ) {
+      signal++;
+
+      const msg = `
+💰🔥 <b>ELITE GİR</b>
+
+🏟 ${teams.home.name} - ${teams.away.name}
+⏱ Dakika: ${minute}
+⚽ Skor: ${goals.home}-${goals.away}
+
+📊 Baskı: ${pressure.toFixed(1)}/10
+
+🎯 Market: Maç Sonu 2.5 ÜST
+💸 Oran: ~1.70 - 1.90
+
+⚠️ Küçük stake gir
+      `;
+
+      await sendTelegram(msg);
+    }
+  }
+
+  console.log(`📊 ÖZET → Bakıldı: ${checked} | Sinyal: ${signal}`);
+}
+
+// ================= LOOP =================
+setInterval(runBot, POLL_INTERVAL);
+
+// TEST MESAJI
+sendTelegram("🤖 BOT + AUTO WIN TRACK AKTİF");
