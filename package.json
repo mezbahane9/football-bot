@@ -1,6 +1,6 @@
 {
-  "name": "mezbahane-detail-pro",
-  "version": "3.0.0",
+  "name": "mezbahane-live-intelligence",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "start": "node server.js"
