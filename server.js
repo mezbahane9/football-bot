@@ -17,7 +17,6 @@ let memory = {};
 let lastSent = {};
 let activeSignals = {};
 let lastStatsUpdateId = 0;
-let statsSupportedLeagues = new Set();
 
 let performance = {
   total: 0,
@@ -31,36 +30,6 @@ async function sendTelegram(text) {
     text,
     parse_mode: "HTML"
   });
-}
-
-async function loadCoverage() {
-  try {
-    const res = await axios.get("https://v3.football.api-sports.io/leagues", {
-      headers: { "x-apisports-key": API_KEY }
-    });
-
-    const leagues = res.data.response || [];
-    statsSupportedLeagues.clear();
-
-    for (const item of leagues) {
-      const leagueId = item.league?.id;
-
-      const currentSeason = item.seasons?.find(s => s.current === true);
-
-      const hasStats =
-        currentSeason?.coverage?.fixtures?.statistics === true ||
-        item.seasons?.some(s => s.coverage?.fixtures?.statistics === true);
-
-      if (leagueId && hasStats) {
-        statsSupportedLeagues.add(leagueId);
-      }
-    }
-
-    console.log(`Coverage yüklendi: ${leagues.length} lig`);
-    console.log(`Stats destekleyen lig: ${statsSupportedLeagues.size}`);
-  } catch (err) {
-    console.log("Coverage yükleme hatası:", err.response?.data || err.message);
-  }
 }
 
 function badLeague(leagueName = "") {
@@ -255,7 +224,6 @@ async function checkPerformance(matches) {
 
     if (newTotal > oldTotal) {
       const diffMin = nowMinute - sig.minute;
-
       performance.win++;
 
       await sendTelegram(`
@@ -298,10 +266,10 @@ async function fetchLiveMatches() {
 
     const matches = fixtures.data.response || [];
 
-    let skippedNoCoverage = 0;
     let skippedBadLeague = 0;
     let skippedNoStats = 0;
     let checkedStats = 0;
+    let weakMomentum = 0;
 
     console.log(`API TEST: ${matches.length} canlı maç bulundu.`);
 
@@ -310,7 +278,6 @@ async function fetchLiveMatches() {
     for (const m of matches) {
       const id = m.fixture.id;
       const minute = m.fixture.status.elapsed;
-      const leagueId = m.league.id;
       const league = m.league.name;
       const home = m.teams.home.name;
       const away = m.teams.away.name;
@@ -321,11 +288,6 @@ async function fetchLiveMatches() {
 
       if (badLeague(league)) {
         skippedBadLeague++;
-        continue;
-      }
-
-      if (!statsSupportedLeagues.has(leagueId)) {
-        skippedNoCoverage++;
         continue;
       }
 
@@ -368,7 +330,10 @@ async function fetchLiveMatches() {
       const awayDiff = diff(awayNow, old.away);
       const totalDiff = total(homeDiff, awayDiff);
 
-      if (!validMomentum(totalDiff)) continue;
+      if (!validMomentum(totalDiff)) {
+        weakMomentum++;
+        continue;
+      }
 
       const dominant = chooseSide(homeDiff, awayDiff);
 
@@ -469,7 +434,7 @@ ${botView(type, dominant, totalDiff, value)}
     }
 
     console.log(
-      `ÖZET → BadLeague:${skippedBadLeague} | CoverageYok:${skippedNoCoverage} | StatsBakıldı:${checkedStats} | StatsYok:${skippedNoStats}`
+      `ÖZET → BadLeague:${skippedBadLeague} | StatsBakıldı:${checkedStats} | StatsYok:${skippedNoStats} | MomentumZayıf:${weakMomentum}`
     );
   } catch (err) {
     console.log("HATA:", err.response?.data || err.message);
@@ -521,7 +486,7 @@ Başarı: %${winRate}
   }
 }
 
-console.log("PRO COVERAGE + UYARI BOT çalışıyor...");
+console.log("PRO DIRECT-STATS BOT çalışıyor...");
 
 setTimeout(() => {
   sendTelegram("✅ BOT TEST: Telegram bağlantısı çalışıyor.")
@@ -532,7 +497,6 @@ setTimeout(() => {
 }, 10000);
 
 async function startBot() {
-  await loadCoverage();
   await initStatsOffset();
 
   fetchLiveMatches();
