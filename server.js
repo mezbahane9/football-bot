@@ -45,12 +45,11 @@ async function loadCoverage() {
     for (const item of leagues) {
       const leagueId = item.league?.id;
 
+      const currentSeason = item.seasons?.find(s => s.current === true);
+
       const hasStats =
-        item.seasons &&
-        item.seasons[0] &&
-        item.seasons[0].coverage &&
-        item.seasons[0].coverage.fixtures &&
-        item.seasons[0].coverage.fixtures.statistics === true;
+        currentSeason?.coverage?.fixtures?.statistics === true ||
+        item.seasons?.some(s => s.coverage?.fixtures?.statistics === true);
 
       if (leagueId && hasStats) {
         statsSupportedLeagues.add(leagueId);
@@ -405,7 +404,7 @@ async function fetchLiveMatches() {
 
         lastSent[id + "_warn"] = Date.now();
 
-        const warnMsg = `
+        await sendTelegram(`
 ⚠️ <b>TAKİP ET</b>
 
 <b>Maç:</b> ${home} - ${away}
@@ -418,9 +417,8 @@ async function fetchLiveMatches() {
 
 🤖 <b>Bot Görüşü:</b>
 ${botView("⚠️ TAKİP", dominant, totalDiff, value)}
-`;
+`);
 
-        await sendTelegram(warnMsg);
         console.log(`UYARI: ${home} - ${away} | ${conf}/10`);
         continue;
       }
@@ -432,7 +430,7 @@ ${botView("⚠️ TAKİP", dominant, totalDiff, value)}
 
       lastSent[id] = Date.now();
 
-      const msg = `
+      await sendTelegram(`
 ${type} <b>GİR</b>
 
 <b>Maç:</b> ${home} - ${away}
@@ -450,9 +448,7 @@ ${type} <b>GİR</b>
 
 🤖 <b>Bot Görüşü:</b>
 ${botView(type, dominant, totalDiff, value)}
-`;
-
-      await sendTelegram(msg);
+`);
 
       activeSignals[id] = {
         minute,
