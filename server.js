@@ -6,6 +6,8 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || 120);
+
+const MIN_EARLY = 7.4;
 const MIN_NORMAL = 8.0;
 const MIN_ELITE = 8.7;
 
@@ -43,6 +45,7 @@ function getStat(stats, type) {
   const raw = stats.find(x => x.type === type)?.value;
 
   if (raw === null || raw === undefined) return 0;
+
   if (typeof raw === "string" && raw.includes("%")) {
     return Number(raw.replace("%", "")) || 0;
   }
@@ -104,9 +107,10 @@ function chooseSide(homeDiff, awayDiff) {
 }
 
 function validMomentum(totalDiff) {
-  if (totalDiff.shots < 3) return false;
-  if (totalDiff.shotsOn < 1) return false;
-  if (totalDiff.dangerous < 8) return false;
+  // Erken sistem: biraz daha erken yakalar
+  if (totalDiff.shots < 2) return false;
+  if (totalDiff.shotsOn < 1 && totalDiff.corners < 1) return false;
+  if (totalDiff.dangerous < 6) return false;
 
   return true;
 }
@@ -167,11 +171,15 @@ function selectMarket(minute, homeGoals, awayGoals, totalDiff, dominant) {
   return null;
 }
 
-function botView(dominant, totalDiff) {
+function botView(type, dominant, totalDiff) {
   const sideText =
     dominant.side === "Dengeli"
       ? "İki takımda da tempo yükseldi"
       : `Momentum ${dominant.side} tarafına geçti`;
+
+  if (type === "⚡ ERKEN") {
+    return `${sideText}. Erken sinyal: son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. Gol baskısı yeni oluşuyor, oran düşmeden yakalama fırsatı olabilir.`;
+  }
 
   return `${sideText}. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. API verisi gol baskısının yükseldiğini gösteriyor.`;
 }
@@ -179,6 +187,7 @@ function botView(dominant, totalDiff) {
 function signalType(conf) {
   if (conf >= MIN_ELITE) return "🔥 ELITE";
   if (conf >= MIN_NORMAL) return "🟢 NORMAL";
+  if (conf >= MIN_EARLY) return "⚡ ERKEN";
   return null;
 }
 
@@ -332,7 +341,7 @@ ${type} <b>GİR</b>
 <b>Güven:</b> ${conf}/10
 
 🤖 <b>Bot Görüşü:</b>
-${botView(dominant, totalDiff)}
+${botView(type, dominant, totalDiff)}
 `;
 
       await sendTelegram(msg);
@@ -359,14 +368,29 @@ ${botView(dominant, totalDiff)}
   }
 }
 
-async function checkStatsCommand() {
+async function initStatsOffset() {
   try {
     const res = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`);
     const updates = res.data.result || [];
 
-    for (const update of updates) {
-      if (update.update_id <= lastStatsUpdateId) continue;
+    if (updates.length > 0) {
+      lastStatsUpdateId = updates[updates.length - 1].update_id;
+      console.log("Eski Telegram komutları temizlendi.");
+    }
+  } catch (err) {
+    console.log("Offset başlatma hatası:", err.message);
+  }
+}
 
+async function checkStatsCommand() {
+  try {
+    const res = await axios.get(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${lastStatsUpdateId + 1}`
+    );
+
+    const updates = res.data.result || [];
+
+    for (const update of updates) {
       lastStatsUpdateId = update.update_id;
 
       if (update.message?.text === "/stats") {
@@ -398,6 +422,8 @@ setTimeout(() => {
       console.log("Telegram test hatası:", err.response?.data || err.message)
     );
 }, 10000);
+
+initStatsOffset();
 
 fetchLiveMatches();
 
