@@ -8,6 +8,7 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || 120);
 const DEFAULT_ODDS = Number(process.env.DEFAULT_ODDS || 1.80);
 
+const MIN_WARNING = 6.5;
 const MIN_EARLY = 7.4;
 const MIN_NORMAL = 8.0;
 const MIN_ELITE = 8.7;
@@ -16,7 +17,6 @@ let memory = {};
 let lastSent = {};
 let activeSignals = {};
 let lastStatsUpdateId = 0;
-
 let statsSupportedLeagues = new Set();
 
 let performance = {
@@ -40,7 +40,6 @@ async function loadCoverage() {
     });
 
     const leagues = res.data.response || [];
-
     statsSupportedLeagues.clear();
 
     for (const item of leagues) {
@@ -224,6 +223,10 @@ function botView(type, dominant, totalDiff, value) {
       ? "İki takımda da tempo yükseldi"
       : `Momentum ${dominant.side} tarafına geçti`;
 
+  if (type === "⚠️ TAKİP") {
+    return `${sideText}. Baskı oluşmaya başladı ama henüz giriş seviyesi değil. Son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var.`;
+  }
+
   if (type === "⚡ ERKEN") {
     return `${sideText}. Erken sinyal: son periyotta ${totalDiff.shots} şut, ${totalDiff.shotsOn} isabetli şut, ${totalDiff.corners} korner ve ${totalDiff.dangerous} tehlikeli atak artışı var. Gol baskısı yeni oluşuyor. Value farkı: %${value}.`;
   }
@@ -310,6 +313,7 @@ async function fetchLiveMatches() {
       const awayGoals = Number(m.goals.away || 0);
 
       if (!minute || minute < 8 || minute > 90) continue;
+
       if (badLeague(league)) {
         skippedBadLeague++;
         continue;
@@ -381,14 +385,41 @@ async function fetchLiveMatches() {
         dominant
       );
 
-      const type = signalType(conf);
-      if (!type) continue;
-
       const odds = DEFAULT_ODDS;
       const botProb = probabilityFromConfidence(conf);
       const bookProb = impliedProbability(odds);
       const value = valuePercent(botProb, bookProb);
       const isValue = value >= 5;
+
+      const type = signalType(conf);
+
+      if (!type && conf >= MIN_WARNING) {
+        const lastWarn = lastSent[id + "_warn"] || 0;
+        if (Date.now() - lastWarn < 10 * 60 * 1000) continue;
+
+        lastSent[id + "_warn"] = Date.now();
+
+        const warnMsg = `
+⚠️ <b>TAKİP ET</b>
+
+<b>Maç:</b> ${home} - ${away}
+<b>Lig:</b> ${league}
+<b>Dakika:</b> ${minute}
+<b>Skor:</b> ${homeGoals}-${awayGoals}
+<b>Market Adayı:</b> ${market}
+<b>Yön:</b> ${dominant.side}
+<b>Güven:</b> ${conf}/10
+
+🤖 <b>Bot Görüşü:</b>
+${botView("⚠️ TAKİP", dominant, totalDiff, value)}
+`;
+
+        await sendTelegram(warnMsg);
+        console.log(`UYARI: ${home} - ${away} | ${conf}/10`);
+        continue;
+      }
+
+      if (!type) continue;
 
       const last = lastSent[id] || 0;
       if (Date.now() - last < 10 * 60 * 1000) continue;
@@ -488,7 +519,7 @@ Başarı: %${winRate}
   }
 }
 
-console.log("PRO COVERAGE BOT çalışıyor...");
+console.log("PRO COVERAGE + UYARI BOT çalışıyor...");
 
 setTimeout(() => {
   sendTelegram("✅ BOT TEST: Telegram bağlantısı çalışıyor.")
