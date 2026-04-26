@@ -1,146 +1,166 @@
-const axios = require("axios");
+import fetch from "node-fetch";
 
 // ================= ENV =================
 const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_INTERVAL = Number(process.env.POLL_INTERVAL) || 180000;
-const MAX_MATCHES = Number(process.env.MAX_MATCHES_PER_ROUND) || 20;
+const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 180000); // 3 dk
 
-console.log("🤖 BOT + PARA MODU + RADAR AKTİF");
+// ================= CORE =================
 
-// ================= TELEGRAM =================
-async function sendTelegram(msg) {
+// Dakika filtresi (EN KRİTİK)
+function dakikaFiltresi(match) {
+  const dakika = match.minute;
+  const ev = match.goals.home;
+  const dep = match.goals.away;
+  const toplamGol = ev + dep;
+
+  if (dakika >= 75) return false;
+  if (dakika >= 70 && (3 - toplamGol) >= 2) return false;
+  if (dakika >= 65 && toplamGol <= 1) return false;
+  if (dakika >= 60 && toplamGol === 0) return false;
+
+  return true;
+}
+
+// Basit baskı hesap
+function calculatePressure(stats) {
+  const shots = stats.shotsOnGoal || 0;
+  const dangerous = stats.attacksDangerous || 0;
+  const corners = stats.corners || 0;
+
+  return (shots * 1.5) + (dangerous * 0.05) + (corners * 0.7);
+}
+
+// Telegram gönder
+async function sendTelegram(text) {
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: CHAT_ID,
-      text: msg,
-      parse_mode: "HTML"
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text,
+        parse_mode: "HTML"
+      })
     });
   } catch (err) {
     console.log("Telegram hata:", err.message);
   }
 }
 
-// ================= API =================
+// ================= FETCH =================
+
 async function getLiveMatches() {
   try {
-    const res = await axios.get(
-      "https://v3.football.api-sports.io/fixtures?live=all",
-      {
-        headers: {
-          "x-apisports-key": API_KEY
-        }
+    const res = await fetch("https://v3.football.api-sports.io/fixtures?live=all", {
+      headers: {
+        "x-apisports-key": API_KEY
       }
-    );
+    });
 
-    return res.data.response || [];
+    const data = await res.json();
+    return data.response || [];
   } catch (err) {
-    const hata = err.response?.data || err.message;
-    console.log("🚨 API HATA:", hata);
-
-    if (JSON.stringify(hata).includes("Too many requests")) {
-      console.log("⏳ Rate limit → 60 sn bekleniyor...");
-      await new Promise(r => setTimeout(r, 60000));
-    }
-
+    console.log("Live fetch hata:", err.message);
     return [];
   }
 }
 
-// ================= STATS =================
 async function getStats(fixtureId) {
   try {
-    const res = await axios.get(
-      `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`,
-      {
-        headers: {
-          "x-apisports-key": API_KEY
-        }
+    const res = await fetch(`https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`, {
+      headers: {
+        "x-apisports-key": API_KEY
       }
-    );
+    });
 
-    return res.data.response;
-  } catch {
+    const data = await res.json();
+
+    if (!data.response || data.response.length === 0) return null;
+
+    return data.response;
+  } catch (err) {
+    console.log("Stats hata:", err.message);
     return null;
   }
 }
 
-// ================= MOMENTUM =================
-function calculatePressure(stats) {
-  try {
-    const home = stats[0].statistics;
+// ================= ANALYZE =================
 
-    const get = (arr, name) =>
-      arr.find(x => x.type === name)?.value || 0;
+async function analyze() {
+  console.log("🔎 Tarama başladı...");
 
-    return (
-      get(home, "Shots on Goal") * 2 +
-      get(home, "Shots off Goal") +
-      get(home, "Corner Kicks") * 1.5 +
-      get(home, "Dangerous Attacks") * 0.1
-    );
-  } catch {
-    return 0;
-  }
-}
-
-// ================= ANA BOT =================
-async function runBot() {
   const matches = await getLiveMatches();
 
-  console.log(`⚽ ${matches.length} maç | İncelenecek: ${MAX_MATCHES}`);
+  let sinyal = 0;
 
-  let checked = 0;
-  let signals = 0;
-
-  for (let m of matches.slice(0, MAX_MATCHES)) {
-    const fixture = m.fixture;
-    const teams = m.teams;
-    const goals = m.goals;
+  for (let match of matches.slice(0, 20)) {
+    const fixture = match.fixture;
+    const teams = match.teams;
+    const goals = match.goals;
     const minute = fixture.status.elapsed;
 
-    const stats = await getStats(fixture.id);
-    if (!stats) continue;
+    const statsData = await getStats(fixture.id);
+    if (!statsData) continue;
 
-    checked++;
+    const homeStats = statsData[0]?.statistics || [];
 
-    const pressure = calculatePressure(stats);
+    const stats = {};
+    homeStats.forEach(s => {
+      stats[s.type] = Number(s.value) || 0;
+    });
 
-    // 🔥 PARA ZAMANI SİNYAL
-    if (
-      pressure > 10 &&
-      minute >= 60 &&
-      minute <= 75 &&
-      goals.home + goals.away <= 3
-    ) {
-      signals++;
+    const pressure = calculatePressure({
+      shotsOnGoal: stats["Shots on Goal"],
+      attacksDangerous: stats["Dangerous Attacks"],
+      corners: stats["Corner Kicks"]
+    });
 
-      const msg = `
-💰🔥 <b>ELITE GİR</b>
+    const matchObj = {
+      minute,
+      goals,
+      pressure,
+      teams
+    };
 
-🏟 ${teams.home.name} - ${teams.away.name}
+    // ❌ Dakika filtresi
+    if (!dakikaFiltresi(matchObj)) continue;
+
+    // ❌ Minimum baskı
+    if (pressure < 9) continue;
+
+    // ✔ Sinyal
+    sinyal++;
+
+    const mesaj = `
+🔥 ELITE GİR
+
+⚽ ${teams.home.name} - ${teams.away.name}
 ⏱ Dakika: ${minute}
-⚽ Skor: ${goals.home}-${goals.away}
+📊 Skor: ${goals.home} - ${goals.away}
 
-📊 Baskı: ${pressure.toFixed(1)}/10
+📈 Baskı: ${pressure.toFixed(1)}
 
 🎯 Market: 2.5 ÜST
-💸 Oran: ~1.70 - 1.90
+💰 Küçük stake önerilir
+`;
 
-⚠️ Küçük stake ile gir
-      `;
-
-      await sendTelegram(msg);
-    }
+    await sendTelegram(mesaj);
   }
 
-  console.log(`📊 ÖZET → Bakıldı: ${checked} | Sinyal: ${signals}`);
+  console.log(`📊 Sinyal: ${sinyal}`);
 }
 
 // ================= LOOP =================
-setInterval(runBot, POLL_INTERVAL);
 
-// ================= START =================
-sendTelegram("🤖 BOT AKTİF + PARA MODU");
+console.log("🤖 BOT + PARA MODU + DAKİKA FİLTRESİ AKTİF");
+
+setInterval(async () => {
+  try {
+    await analyze();
+  } catch (err) {
+    console.log("Ana hata:", err.message);
+  }
+}, POLL_INTERVAL);
