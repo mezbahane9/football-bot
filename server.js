@@ -44,7 +44,13 @@ async function loadCoverage() {
 
     for (const item of leagues) {
       const leagueId = item.league?.id;
-      const hasStats = item.coverage?.fixtures?.statistics === true;
+
+      const hasStats =
+        item.seasons &&
+        item.seasons[0] &&
+        item.seasons[0].coverage &&
+        item.seasons[0].coverage.fixtures &&
+        item.seasons[0].coverage.fixtures.statistics === true;
 
       if (leagueId && hasStats) {
         statsSupportedLeagues.add(leagueId);
