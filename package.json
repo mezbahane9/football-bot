@@ -1,8 +1,11 @@
 {
   "name": "mezbahane-live-intelligence",
-  "version": "4.0.0",
+  "version": "5.0.0-real-xg",
   "type": "module",
   "scripts": {
     "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
