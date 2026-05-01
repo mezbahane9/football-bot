@@ -3,11 +3,13 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 180000);
-const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
+const MAX_MATCH = Number(process.env.MAX_MATCH || 30);
 const STATS_DELAY = Number(process.env.STATS_DELAY || 1500);
 
-const MIN_ELITE = Number(process.env.MIN_ELITE || 10.0);
-const XG_SPIKE_MIN = Number(process.env.XG_SPIKE_MIN || 0.05);
+const MIN_ELITE = Number(process.env.MIN_ELITE || 8.5);
+const XG_SPIKE_MIN = Number(process.env.XG_SPIKE_MIN || 0.03);
+const MIN_RADAR_PRESS = Number(process.env.MIN_RADAR_PRESS || 9.0);
+const MIN_RADAR_MOMENTUM = Number(process.env.MIN_RADAR_MOMENTUM || 1.5);
 
 const sent = new Map();
 const memory = new Map();
@@ -86,9 +88,7 @@ function extractTeamStats(team) {
     shots: getValue(s, "Total Shots"),
     shotsOn: getValue(s, "Shots on Goal"),
     shotsOff: getValue(s, "Shots off Goal"),
-    blocked: getValue(s, "Blocked Shots"),
     insideBox: getValue(s, "Shots insidebox"),
-    outsideBox: getValue(s, "Shots outsidebox"),
     corners: getValue(s, "Corner Kicks"),
     dangerous: getValue(s, "Dangerous Attacks"),
     possession: getValue(s, "Ball Possession"),
@@ -119,18 +119,10 @@ function diff(now, old) {
 
 function badLeague(name = "") {
   const bad = [
-    "U19",
-    "U20",
-    "U21",
-    "U23",
-    "Youth",
-    "Reserve",
-    "Reserves",
-    "Women",
-    "Friendly",
-    "Club Friendlies",
-    "Amateur",
-    "Regional"
+    "U19", "U20", "U21", "U23",
+    "Youth", "Reserve", "Reserves",
+    "Women", "Friendly", "Club Friendlies",
+    "Amateur", "Regional"
   ];
 
   return bad.some(x => name.toLowerCase().includes(x.toLowerCase()));
@@ -155,30 +147,6 @@ function xgSpike(delta) {
   return Number((delta.xg || 0).toFixed(2));
 }
 
-function momentumLabel(score) {
-  if (score >= 5) return "🔥 Çok güçlü";
-  if (score >= 3) return "🟢 Güçlü";
-  if (score >= 1.5) return "🟡 Orta";
-  if (score > 0) return "🔴 Zayıf";
-  return "İlk ölçüm / veri artışı yok";
-}
-
-function teamPressure(t, minute) {
-  let score = 0;
-
-  score += t.shots * 0.25;
-  score += t.shotsOn * 1.25;
-  score += t.insideBox * 0.55;
-  score += t.corners * 0.65;
-  score += t.dangerous * 0.04;
-  score += t.xg * 3.0;
-
-  if (minute >= 55 && minute <= 80) score += 0.6;
-  if (t.red > 0) score -= 1.5;
-
-  return Number(score.toFixed(1));
-}
-
 function totalPressure(total, minute) {
   let score = 0;
 
@@ -194,27 +162,7 @@ function totalPressure(total, minute) {
   return Number(score.toFixed(1));
 }
 
-function leadingSide(homePressure, awayPressure) {
-  if (homePressure >= awayPressure + 2.5) return "Ev";
-  if (awayPressure >= homePressure + 2.5) return "Deplasman";
-  return "Dengeli";
-}
-
-function dataCheck(total) {
-  if (!total.xg || total.xg <= 0) {
-    return {
-      ok: false,
-      reason: "XG verisi API’den gelmiyor"
-    };
-  }
-
-  return {
-    ok: true,
-    reason: "XG API’den geliyor"
-  };
-}
-
-function chooseMarket(minute, totalGoals, side) {
+function chooseMarket(minute, totalGoals) {
   if (minute <= 45) {
     if (totalGoals === 0) return "İlk Yarı 0.5 ÜST";
     if (totalGoals === 1) return "İlk Yarı 1.5 ÜST";
@@ -223,8 +171,6 @@ function chooseMarket(minute, totalGoals, side) {
   if (minute >= 46) {
     if (totalGoals <= 1) return "Maç Sonu 1.5 ÜST";
     if (totalGoals === 2) return "Maç Sonu 2.5 ÜST";
-    if (side === "Ev") return "Sıradaki Gol Ev";
-    if (side === "Deplasman") return "Sıradaki Gol Deplasman";
   }
 
   return null;
@@ -237,43 +183,87 @@ function neededGoal(market, homeGoals, awayGoals) {
   if (market === "İlk Yarı 1.5 ÜST") return Math.max(0, 2 - total);
   if (market === "Maç Sonu 1.5 ÜST") return Math.max(0, 2 - total);
   if (market === "Maç Sonu 2.5 ÜST") return Math.max(0, 3 - total);
-  if (market === "Sıradaki Gol Ev") return 1;
-  if (market === "Sıradaki Gol Deplasman") return 1;
 
   return 99;
 }
 
-function shouldSignal({
-  totalPress,
-  totalXg,
-  momentum,
-  spike,
-  need,
-  minute,
-  delta
-}) {
-  if (!totalXg || totalXg < 0.7) return false;
+function hasRealAttackIncrease(delta) {
   if (!delta) return false;
-  if (need > 1) return false;
-  if (minute > 85) return false;
 
-  const realProMove =
-    spike >= XG_SPIKE_MIN &&
-    momentum >= 1.5 &&
-    (
-      delta.shotsOn >= 1 ||
-      delta.insideBox >= 1 ||
-      delta.corners >= 1 ||
-      delta.xg >= XG_SPIKE_MIN
-    );
-
-  if (!realProMove) return false;
-  if (totalPress < MIN_ELITE) return false;
-
-  return true;
+  return (
+    delta.shots >= 1 ||
+    delta.shotsOn >= 1 ||
+    delta.insideBox >= 1 ||
+    delta.corners >= 1 ||
+    delta.dangerous >= 1 ||
+    delta.xg >= XG_SPIKE_MIN
+  );
 }
 
-function shouldSend(key, minutes = 15) {
+function signalDecision({ total, totalPress, momentum, spike, delta, need, minute }) {
+  if (!delta) {
+    return {
+      send: false,
+      type: "NONE",
+      title: "İlk ölçüm"
+    };
+  }
+
+  if (need > 1 || minute > 85) {
+    return {
+      send: false,
+      type: "NONE",
+      title: "Dakika / gereken gol uygun değil"
+    };
+  }
+
+  const xgExists = total.xg > 0;
+  const realAttack = hasRealAttackIncrease(delta);
+
+  const elite =
+    xgExists &&
+    total.xg >= 0.7 &&
+    spike >= XG_SPIKE_MIN &&
+    momentum >= 1.5 &&
+    totalPress >= MIN_ELITE &&
+    realAttack;
+
+  if (elite) {
+    return {
+      send: true,
+      type: "ELITE",
+      title: "🔥 PRO REAL XG ELITE",
+      karar: "✅ GİRİLEBİLİR",
+      stake: "%1 - %2 kasa",
+      note: "XG API’den geliyor. XG spike var. Momentum ve gerçek pozisyon artışı var."
+    };
+  }
+
+  const radar =
+    !xgExists &&
+    totalPress >= MIN_RADAR_PRESS &&
+    momentum >= MIN_RADAR_MOMENTUM &&
+    realAttack;
+
+  if (radar) {
+    return {
+      send: true,
+      type: "RADAR",
+      title: "⚠️ REAL RADAR",
+      karar: "👀 İZLE / GİRME",
+      stake: "Girme, takip et",
+      note: "XG API’den gelmiyor. Fake XG üretilmedi. Sadece gerçek şut/korner/ceza içi/momentum verisiyle radar bildirimi."
+    };
+  }
+
+  return {
+    send: false,
+    type: "NONE",
+    title: "Şart yok"
+  };
+}
+
+function shouldSend(key, minutes = 12) {
   const last = sent.get(key) || 0;
 
   if (Date.now() - last < minutes * 60 * 1000) {
@@ -285,7 +275,7 @@ function shouldSend(key, minutes = 15) {
 }
 
 async function analyze() {
-  console.log("🔎 PRO REAL XG SPIKE taraması başladı...");
+  console.log("🔎 ELITE + RADAR REAL taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -306,9 +296,8 @@ async function analyze() {
 
   let checked = 0;
   let statsYok = 0;
-  let xgYok = 0;
-  let proYok = 0;
-  let sentCount = 0;
+  let eliteSent = 0;
+  let radarSent = 0;
   let pas = 0;
 
   for (const m of filtered) {
@@ -319,7 +308,6 @@ async function analyze() {
 
     const homeName = m.teams.home.name;
     const awayName = m.teams.away.name;
-
     const league = m.league.name;
     const country = m.league.country;
 
@@ -340,13 +328,6 @@ async function analyze() {
     const awayStats = extractTeamStats(stats[1]);
     const totalStats = combine(homeStats, awayStats);
 
-    const check = dataCheck(totalStats);
-
-    if (!check.ok) {
-      xgYok++;
-      continue;
-    }
-
     const old = memory.get(fixtureId);
     const delta = old ? diff(totalStats, old.totalStats) : null;
 
@@ -355,15 +336,11 @@ async function analyze() {
       minute
     });
 
-    const momScore = momentumScore(delta);
+    const momentum = momentumScore(delta);
     const spike = xgSpike(delta);
-
-    const homePress = teamPressure(homeStats, minute);
-    const awayPress = teamPressure(awayStats, minute);
     const totalPress = totalPressure(totalStats, minute);
-    const side = leadingSide(homePress, awayPress);
 
-    const market = chooseMarket(minute, totalGoals, side);
+    const market = chooseMarket(minute, totalGoals);
 
     if (!market) {
       pas++;
@@ -372,101 +349,84 @@ async function analyze() {
 
     const need = neededGoal(market, homeGoals, awayGoals);
 
-    const signalOk = shouldSignal({
+    const decision = signalDecision({
+      total: totalStats,
       totalPress,
-      totalXg: totalStats.xg,
-      momentum: momScore,
+      momentum,
       spike,
+      delta,
       need,
-      minute,
-      delta
+      minute
     });
 
-    if (!signalOk) {
-      proYok++;
+    if (!decision.send) {
+      pas++;
       continue;
     }
 
-    const key = `${fixtureId}_${market}_PRO_REAL_XG_SPIKE`;
+    const key = `${fixtureId}_${market}_${decision.type}`;
 
-    if (!shouldSend(key, 15)) {
+    if (!shouldSend(key, decision.type === "ELITE" ? 15 : 10)) {
       continue;
     }
 
     const msg = `
-🔥 <b>PRO REAL XG SPIKE SİNYAL</b>
+${decision.title} <b>SİNYAL</b>
 
 ⚽ <b>${homeName} - ${awayName}</b>
 🌍 <b>${country} / ${league}</b>
 ⏱ <b>Dakika:</b> ${minute}
 📊 <b>Skor:</b> ${homeGoals}-${awayGoals}
 
-🎯 <b>Önerilen Market:</b> ${market}
+🎯 <b>Market:</b> ${market}
 🥅 <b>Gereken Gol:</b> ${need}
-➡️ <b>Baskı Yönü:</b> ${side}
 
-<b>REAL PRO OKUMA</b>
-🏠 Ev Baskı: ${homePress}/10
-✈️ Dep Baskı: ${awayPress}/10
-📈 Toplam Baskı: ${totalPress}/10
-🎯 Toplam XG: ${totalStats.xg}
-🚀 XG Spike: +${spike}
-🧭 Momentum: ${momentumLabel(momScore)} (${momScore})
-🛡 Veri Durumu: ${check.reason}
+<b>GERÇEK API VERİSİ</b>
+📈 Baskı: ${totalPress}
+🎯 Toplam XG: ${totalStats.xg > 0 ? totalStats.xg : "YOK"}
+🚀 XG Spike: ${spike > 0 ? "+" + spike : "YOK"}
+🧭 Momentum: ${momentum}
 
-<b>SON TUR GERÇEK ARTIŞ</b>
+<b>SON TUR ARTIŞ</b>
 📍 Şut Artışı: ${delta ? delta.shots : "İlk ölçüm"}
 🎯 İsabet Artışı: ${delta ? delta.shotsOn : "İlk ölçüm"}
-🚩 Korner Artışı: ${delta ? delta.corners : "İlk ölçüm"}
 📦 Ceza İçi Şut Artışı: ${delta ? delta.insideBox : "İlk ölçüm"}
+🚩 Korner Artışı: ${delta ? delta.corners : "İlk ölçüm"}
+⚡ Tehlikeli Atak Artışı: ${delta ? delta.dangerous : "İlk ölçüm"}
 🎯 XG Artışı: ${delta ? delta.xg : "İlk ölçüm"}
 
-<b>EV SAHİBİ İSTATİSTİK</b>
-📍 Şut: ${homeStats.shots}
-🎯 İsabet: ${homeStats.shotsOn}
-📦 Ceza İçi Şut: ${homeStats.insideBox}
-🚩 Korner: ${homeStats.corners}
-⚡ Tehlikeli Atak: ${homeStats.dangerous}
-🎯 XG: ${homeStats.xg}
-🟨 Sarı: ${homeStats.yellow}
-🟥 Kırmızı: ${homeStats.red}
-⚽ Topa Sahip Olma: ${homeStats.possession}%
+<b>TOPLAM İSTATİSTİK</b>
+📍 Şut: ${totalStats.shots}
+🎯 İsabet: ${totalStats.shotsOn}
+📦 Ceza İçi Şut: ${totalStats.insideBox}
+🚩 Korner: ${totalStats.corners}
+⚡ Tehlikeli Atak: ${totalStats.dangerous}
 
-<b>DEPLASMAN İSTATİSTİK</b>
-📍 Şut: ${awayStats.shots}
-🎯 İsabet: ${awayStats.shotsOn}
-📦 Ceza İçi Şut: ${awayStats.insideBox}
-🚩 Korner: ${awayStats.corners}
-⚡ Tehlikeli Atak: ${awayStats.dangerous}
-🎯 XG: ${awayStats.xg}
-🟨 Sarı: ${awayStats.yellow}
-🟥 Kırmızı: ${awayStats.red}
-⚽ Topa Sahip Olma: ${awayStats.possession}%
+🧠 <b>NET KARAR:</b> ${decision.karar}
+💰 <b>Stake:</b> ${decision.stake}
 
-🧠 <b>NET KARAR:</b> ✅ GİRİLEBİLİR
-⚠️ <b>Risk:</b> Orta
-💰 <b>Stake:</b> %1 - %2 kasa
+📝 <b>Not:</b>
+${decision.note}
 
-📝 <b>Bot Yorumu:</b>
-XG API’den geliyor. Son turda gerçek XG spike var. Momentum gerçek API farkından hesaplandı. İsabet / ceza içi / korner / XG artışı şartlarından en az biri sağlandı. Fake/uydurma veri kullanılmadı.
-
-⚠️ <b>Not:</b> Garanti değildir. Tek maça yüksek kasa riski alma.
+⚠️ Garanti değildir. Kasa yönetimi şart.
 `;
 
     await sendTelegram(msg);
-    sentCount++;
+
+    if (decision.type === "ELITE") eliteSent++;
+    if (decision.type === "RADAR") radarSent++;
   }
 
   console.log(
-    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | XGYok:${xgYok} | ProYok:${proYok} | Gönderildi:${sentCount} | Pas:${pas}`
+    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Elite:${eliteSent} | Radar:${radarSent} | Pas:${pas}`
   );
 }
 
 async function startBot() {
-  console.log("🤖 MEZBAHANE PRO REAL XG SPIKE BOT BAŞLADI");
+  console.log("🤖 MEZBAHANE ELITE + RADAR REAL BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>MEZBAHANE PRO REAL XG SPIKE BOT AKTİF ✅</b>\nXG + Momentum + XG Spike + gerçek pozisyon artışı filtreli sistem çalışıyor."
+    "🤖 <b>MEZBAHANE ELITE + RADAR REAL BOT AKTİF ✅</b>\nELITE için XG şart. XG yoksa sadece REAL RADAR/İZLE bildirimi çalışır. Fake veri yok."
   );
 
   await analyze();
