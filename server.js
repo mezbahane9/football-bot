@@ -7,6 +7,7 @@ const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
 const STATS_DELAY = Number(process.env.STATS_DELAY || 1500);
 
 const MIN_ELITE = Number(process.env.MIN_ELITE || 11.0);
+const XG_SPIKE_MIN = Number(process.env.XG_SPIKE_MIN || 0.10);
 
 const sent = new Map();
 const memory = new Map();
@@ -153,6 +154,11 @@ function momentumScore(delta) {
   return Number(score.toFixed(1));
 }
 
+function xgSpike(delta) {
+  if (!delta) return 0;
+  return Number((delta.xg || 0).toFixed(2));
+}
+
 function momentumLabel(score) {
   if (score >= 5) return "🔥 Çok güçlü";
   if (score >= 3) return "🟢 Güçlü";
@@ -245,11 +251,13 @@ function shouldSignal({
   totalPress,
   totalXg,
   momentum,
+  spike,
   need,
   minute
 }) {
   if (!totalXg || totalXg < 0.8) return false;
   if (!momentum || momentum <= 0) return false;
+  if (!spike || spike < XG_SPIKE_MIN) return false;
   if (totalPress < MIN_ELITE) return false;
   if (need > 1) return false;
   if (minute > 85) return false;
@@ -269,7 +277,7 @@ function shouldSend(key, minutes = 15) {
 }
 
 async function analyze() {
-  console.log("🔎 REAL XG taraması başladı...");
+  console.log("🔎 REAL XG + SPIKE taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -291,6 +299,7 @@ async function analyze() {
   let checked = 0;
   let statsYok = 0;
   let xgYok = 0;
+  let spikeYok = 0;
   let sentCount = 0;
   let pas = 0;
 
@@ -339,6 +348,11 @@ async function analyze() {
     });
 
     const momScore = momentumScore(delta);
+    const spike = xgSpike(delta);
+
+    if (spike > 0 && spike < XG_SPIKE_MIN) {
+      spikeYok++;
+    }
 
     const homePress = teamPressure(homeStats, minute);
     const awayPress = teamPressure(awayStats, minute);
@@ -358,6 +372,7 @@ async function analyze() {
       totalPress,
       totalXg: totalStats.xg,
       momentum: momScore,
+      spike,
       need,
       minute
     });
@@ -367,14 +382,14 @@ async function analyze() {
       continue;
     }
 
-    const key = `${fixtureId}_${market}_REAL_XG`;
+    const key = `${fixtureId}_${market}_REAL_XG_SPIKE`;
 
     if (!shouldSend(key, 15)) {
       continue;
     }
 
     const msg = `
-🔥 <b>ELITE REAL XG SİNYAL</b>
+🚀🔥 <b>ELITE REAL XG SPIKE SİNYAL</b>
 
 ⚽ <b>${homeName} - ${awayName}</b>
 🌍 <b>${country} / ${league}</b>
@@ -389,7 +404,8 @@ async function analyze() {
 🏠 Ev Baskı: ${homePress}/10
 ✈️ Dep Baskı: ${awayPress}/10
 📈 Toplam Baskı: ${totalPress}/10
-🎯 XG: ${totalStats.xg}
+🎯 Toplam XG: ${totalStats.xg}
+🚀 XG Spike: +${spike}
 🧭 Momentum: ${momentumLabel(momScore)} (${momScore})
 🛡 Veri Durumu: ${check.reason}
 
@@ -429,7 +445,7 @@ async function analyze() {
 💰 <b>Stake:</b> %1 - %2 kasa
 
 📝 <b>Bot Yorumu:</b>
-XG API’den geliyor. Momentum artışı var. Baskı skoru elite seviyede. Fake/uydurma veri kullanılmadı.
+XG API’den geliyor. Son turda gerçek XG artışı var. Momentum gerçek API farkından hesaplandı. Fake/uydurma veri kullanılmadı.
 
 ⚠️ <b>Not:</b> Garanti değildir. Tek maça yüksek kasa riski alma.
 `;
@@ -439,15 +455,15 @@ XG API’den geliyor. Momentum artışı var. Baskı skoru elite seviyede. Fake/
   }
 
   console.log(
-    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | XGYok:${xgYok} | Gönderildi:${sentCount} | Pas:${pas}`
+    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | XGYok:${xgYok} | SpikeAltı:${spikeYok} | Gönderildi:${sentCount} | Pas:${pas}`
   );
 }
 
 async function startBot() {
-  console.log("🤖 MEZBAHANE REAL XG BOT BAŞLADI");
+  console.log("🤖 MEZBAHANE REAL XG SPIKE BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>MEZBAHANE REAL XG BOT AKTİF ✅</b>\nXG + Momentum filtreli gerçek veri sistemi çalışıyor."
+    "🤖 <b>MEZBAHANE REAL XG SPIKE BOT AKTİF ✅</b>\nXG + Momentum + XG Spike filtreli gerçek veri sistemi çalışıyor."
   );
 
   await analyze();
