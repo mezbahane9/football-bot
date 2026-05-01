@@ -3,13 +3,13 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 180000);
-const MAX_MATCH = Number(process.env.MAX_MATCH || 30);
+const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
 const STATS_DELAY = Number(process.env.STATS_DELAY || 1500);
 
 const MIN_ELITE = Number(process.env.MIN_ELITE || 8.5);
 const XG_SPIKE_MIN = Number(process.env.XG_SPIKE_MIN || 0.03);
-const MIN_RADAR_PRESS = Number(process.env.MIN_RADAR_PRESS || 9.0);
-const MIN_RADAR_MOMENTUM = Number(process.env.MIN_RADAR_MOMENTUM || 1.5);
+const MIN_RADAR_PRESS = Number(process.env.MIN_RADAR_PRESS || 8.5);
+const MIN_RADAR_MOMENTUM = Number(process.env.MIN_RADAR_MOMENTUM || 1.2);
 
 const sent = new Map();
 const memory = new Map();
@@ -128,6 +128,44 @@ function badLeague(name = "") {
   return bad.some(x => name.toLowerCase().includes(x.toLowerCase()));
 }
 
+function goodLeague(name = "") {
+  const good = [
+    "Premier League",
+    "La Liga",
+    "Bundesliga",
+    "Serie A",
+    "Ligue 1",
+
+    "Champions League",
+    "Europa League",
+    "Conference League",
+
+    "Eredivisie",
+    "Primeira Liga",
+    "Super Lig",
+    "Süper Lig",
+    "Jupiler Pro League",
+    "Scottish Premiership",
+    "MLS",
+    "Brasileirão",
+    "Brasileirao",
+    "Liga Profesional",
+
+    "Championship",
+    "2. Bundesliga",
+    "Serie B",
+    "Ligue 2",
+    "Segunda División",
+    "Segunda Division",
+    "Eerste Divisie",
+
+    "1. Lig",
+    "TFF 1. Lig"
+  ];
+
+  return good.some(x => name.toLowerCase().includes(x.toLowerCase()));
+}
+
 function momentumScore(delta) {
   if (!delta) return 0;
 
@@ -202,19 +240,11 @@ function hasRealAttackIncrease(delta) {
 
 function signalDecision({ total, totalPress, momentum, spike, delta, need, minute }) {
   if (!delta) {
-    return {
-      send: false,
-      type: "NONE",
-      title: "İlk ölçüm"
-    };
+    return { send: false, type: "NONE" };
   }
 
   if (need > 1 || minute > 85) {
-    return {
-      send: false,
-      type: "NONE",
-      title: "Dakika / gereken gol uygun değil"
-    };
+    return { send: false, type: "NONE" };
   }
 
   const xgExists = total.xg > 0;
@@ -256,11 +286,7 @@ function signalDecision({ total, totalPress, momentum, spike, delta, need, minut
     };
   }
 
-  return {
-    send: false,
-    type: "NONE",
-    title: "Şart yok"
-  };
+  return { send: false, type: "NONE" };
 }
 
 function shouldSend(key, minutes = 12) {
@@ -275,7 +301,7 @@ function shouldSend(key, minutes = 12) {
 }
 
 async function analyze() {
-  console.log("🔎 ELITE + RADAR REAL taraması başladı...");
+  console.log("🔎 ELITE + RADAR REAL kaliteli lig taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -286,13 +312,15 @@ async function analyze() {
 
       if (!minute) return false;
       if (minute < 1 || minute > 90) return false;
+
       if (badLeague(league)) return false;
+      if (!goodLeague(league)) return false;
 
       return true;
     })
     .slice(0, MAX_MATCH);
 
-  console.log(`⚽ ${matches.length} canlı maç | İncelenecek: ${filtered.length}`);
+  console.log(`⚽ ${matches.length} canlı maç | Kaliteli lig incelenecek: ${filtered.length}`);
 
   let checked = 0;
   let statsYok = 0;
@@ -423,10 +451,10 @@ ${decision.note}
 }
 
 async function startBot() {
-  console.log("🤖 MEZBAHANE ELITE + RADAR REAL BOT BAŞLADI");
+  console.log("🤖 MEZBAHANE ELITE + RADAR REAL KALİTELİ LİG BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>MEZBAHANE ELITE + RADAR REAL BOT AKTİF ✅</b>\nELITE için XG şart. XG yoksa sadece REAL RADAR/İZLE bildirimi çalışır. Fake veri yok."
+    "🤖 <b>MEZBAHANE ELITE + RADAR REAL BOT AKTİF ✅</b>\nKaliteli lig filtresi aktif. ELITE için XG şart. XG yoksa sadece REAL RADAR/İZLE bildirimi çalışır. Fake veri yok."
   );
 
   await analyze();
