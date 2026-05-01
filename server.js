@@ -6,14 +6,13 @@ const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 180000);
 const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
 const STATS_DELAY = Number(process.env.STATS_DELAY || 1500);
 
-const MIN_ELITE = Number(process.env.MIN_ELITE || 8.5);
-const XG_SPIKE_MIN = Number(process.env.XG_SPIKE_MIN || 0.03);
-const MIN_RADAR_PRESS = Number(process.env.MIN_RADAR_PRESS || 8.5);
-const MIN_RADAR_MOMENTUM = Number(process.env.MIN_RADAR_MOMENTUM || 1.2);
+const MIN_XG = Number(process.env.MIN_XG || 0.6);
+const MIN_MOMENTUM = Number(process.env.MIN_MOMENTUM || 1.2);
+const MIN_PRESSURE = Number(process.env.MIN_PRESSURE || 10);
+const MIN_XG_SPIKE = Number(process.env.MIN_XG_SPIKE || 0.3);
 
 const sent = new Map();
 const memory = new Map();
-const radarMemory = new Map();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -181,11 +180,6 @@ function momentumScore(delta) {
   return Number(score.toFixed(1));
 }
 
-function xgSpike(delta) {
-  if (!delta) return 0;
-  return Number((delta.xg || 0).toFixed(2));
-}
-
 function totalPressure(total, minute) {
   let score = 0;
 
@@ -235,99 +229,44 @@ function hasRealAttackIncrease(delta) {
     delta.insideBox >= 1 ||
     delta.corners >= 1 ||
     delta.dangerous >= 1 ||
-    delta.xg >= XG_SPIKE_MIN
+    delta.xg >= 0.01
   );
 }
 
-function signalDecision({
-  fixtureId,
-  total,
-  totalPress,
-  momentum,
-  spike,
-  delta,
-  need,
-  minute
-}) {
-  if (!delta) {
-    return { send: false, type: "NONE" };
-  }
+function signalDecision({ totalPress, totalXg, momentum, delta, need, minute }) {
+  if (!delta) return { send: false, type: "NONE" };
 
-  if (need > 1 || minute > 85) {
-    return { send: false, type: "NONE" };
-  }
+  if (!totalXg || totalXg < MIN_XG) return { send: false, type: "NONE" };
+  if (!momentum || momentum < MIN_MOMENTUM) return { send: false, type: "NONE" };
+  if (totalPress < MIN_PRESSURE) return { send: false, type: "NONE" };
+  if (need > 1) return { send: false, type: "NONE" };
+  if (minute > 85) return { send: false, type: "NONE" };
+  if (!hasRealAttackIncrease(delta)) return { send: false, type: "NONE" };
 
-  const xgExists = total.xg > 0;
-  const realAttack = hasRealAttackIncrease(delta);
+  const xgSpike = delta.xg >= MIN_XG_SPIKE;
 
-  const radarTime = radarMemory.get(fixtureId);
-  const wasRadarRecently =
-    radarTime && Date.now() - radarTime <= 5 * 60 * 1000;
-
-  const ultra =
-    wasRadarRecently &&
-    xgExists &&
-    total.xg >= 0.7 &&
-    spike >= XG_SPIKE_MIN &&
-    momentum >= 2.0 &&
-    totalPress >= MIN_ELITE &&
-    realAttack;
-
-  if (ultra) {
-    radarMemory.delete(fixtureId);
-
+  if (xgSpike) {
     return {
       send: true,
       type: "ULTRA",
-      title: "🚨🔥 ULTRA REAL SPIKE",
+      title: "🚨🔥 ULTRA REAL XG SPIKE",
       karar: "💣 ANLIK GİR",
       stake: "%1 - %2 kasa",
-      note: "Önce RADAR geldi, ardından XG + momentum + gerçek pozisyon artışı güçlendi. Fake veri kullanılmadı."
+      note: "XG API’den geliyor. Son turda güçlü XG spike var. Momentum ve baskı şartları sağlandı."
     };
   }
 
-  const elite =
-    xgExists &&
-    total.xg >= 0.7 &&
-    spike >= XG_SPIKE_MIN &&
-    momentum >= 1.5 &&
-    totalPress >= MIN_ELITE &&
-    realAttack;
-
-  if (elite) {
-    return {
-      send: true,
-      type: "ELITE",
-      title: "🔥 PRO REAL XG ELITE",
-      karar: "✅ GİRİLEBİLİR",
-      stake: "%1 - %2 kasa",
-      note: "XG API’den geliyor. XG spike var. Momentum ve gerçek pozisyon artışı var."
-    };
-  }
-
-  const radar =
-    !xgExists &&
-    totalPress >= MIN_RADAR_PRESS &&
-    momentum >= MIN_RADAR_MOMENTUM &&
-    realAttack;
-
-  if (radar) {
-    radarMemory.set(fixtureId, Date.now());
-
-    return {
-      send: true,
-      type: "RADAR",
-      title: "⚠️ REAL RADAR",
-      karar: "👀 İZLE / GİRME",
-      stake: "Girme, takip et",
-      note: "XG API’den gelmiyor. Fake XG üretilmedi. Sadece gerçek şut/korner/ceza içi/momentum verisiyle radar bildirimi."
-    };
-  }
-
-  return { send: false, type: "NONE" };
+  return {
+    send: true,
+    type: "ELITE",
+    title: "🔥 ELITE REAL XG",
+    karar: "✅ GİRİLEBİLİR",
+    stake: "%1 kasa",
+    note: "XG API’den geliyor. Momentum ve baskı şartları sağlandı. Fake veri kullanılmadı."
+  };
 }
 
-function shouldSend(key, minutes = 12) {
+function shouldSend(key, minutes = 15) {
   const last = sent.get(key) || 0;
 
   if (Date.now() - last < minutes * 60 * 1000) {
@@ -339,7 +278,7 @@ function shouldSend(key, minutes = 12) {
 }
 
 async function analyze() {
-  console.log("🔎 ELITE + RADAR + ULTRA REAL kaliteli lig taraması başladı...");
+  console.log("🔎 SADECE ELITE + ULTRA REAL XG taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -364,7 +303,6 @@ async function analyze() {
   let statsYok = 0;
   let ultraSent = 0;
   let eliteSent = 0;
-  let radarSent = 0;
   let pas = 0;
 
   for (const m of filtered) {
@@ -404,7 +342,6 @@ async function analyze() {
     });
 
     const momentum = momentumScore(delta);
-    const spike = xgSpike(delta);
     const totalPress = totalPressure(totalStats, minute);
 
     const market = chooseMarket(minute, totalGoals);
@@ -417,11 +354,9 @@ async function analyze() {
     const need = neededGoal(market, homeGoals, awayGoals);
 
     const decision = signalDecision({
-      fixtureId,
-      total: totalStats,
       totalPress,
+      totalXg: totalStats.xg,
       momentum,
-      spike,
       delta,
       need,
       minute
@@ -434,10 +369,7 @@ async function analyze() {
 
     const key = `${fixtureId}_${market}_${decision.type}`;
 
-    const cooldown =
-      decision.type === "ULTRA" ? 20 :
-      decision.type === "ELITE" ? 15 :
-      10;
+    const cooldown = decision.type === "ULTRA" ? 20 : 15;
 
     if (!shouldSend(key, cooldown)) {
       continue;
@@ -456,8 +388,8 @@ ${decision.title} <b>SİNYAL</b>
 
 <b>GERÇEK API VERİSİ</b>
 📈 Baskı: ${totalPress}
-🎯 Toplam XG: ${totalStats.xg > 0 ? totalStats.xg : "YOK"}
-🚀 XG Spike: ${spike > 0 ? "+" + spike : "YOK"}
+🎯 Toplam XG: ${totalStats.xg}
+🚀 XG Spike: ${delta ? delta.xg : "İlk ölçüm"}
 🧭 Momentum: ${momentum}
 
 <b>SON TUR ARTIŞ</b>
@@ -488,19 +420,18 @@ ${decision.note}
 
     if (decision.type === "ULTRA") ultraSent++;
     if (decision.type === "ELITE") eliteSent++;
-    if (decision.type === "RADAR") radarSent++;
   }
 
   console.log(
-    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Ultra:${ultraSent} | Elite:${eliteSent} | Radar:${radarSent} | Pas:${pas}`
+    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Ultra:${ultraSent} | Elite:${eliteSent} | Pas:${pas}`
   );
 }
 
 async function startBot() {
-  console.log("🤖 MEZBAHANE ELITE + RADAR + ULTRA REAL BOT BAŞLADI");
+  console.log("🤖 MEZBAHANE SADECE ELITE + ULTRA REAL XG BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>MEZBAHANE ELITE + RADAR + ULTRA REAL BOT AKTİF ✅</b>\nRADAR izleme, ELITE giriş, ULTRA radar sonrası güçlenme sistemi aktif. Fake veri yok."
+    "🤖 <b>MEZBAHANE ELITE + ULTRA REAL XG BOT AKTİF ✅</b>\nRADAR kapalı. XG yoksa sinyal yok. Sadece ELITE ve ULTRA çalışır. Fake veri yok."
   );
 
   await analyze();
