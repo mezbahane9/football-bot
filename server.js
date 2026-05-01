@@ -13,6 +13,7 @@ const MIN_RADAR_MOMENTUM = Number(process.env.MIN_RADAR_MOMENTUM || 1.2);
 
 const sent = new Map();
 const memory = new Map();
+const radarMemory = new Map();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -238,7 +239,16 @@ function hasRealAttackIncrease(delta) {
   );
 }
 
-function signalDecision({ total, totalPress, momentum, spike, delta, need, minute }) {
+function signalDecision({
+  fixtureId,
+  total,
+  totalPress,
+  momentum,
+  spike,
+  delta,
+  need,
+  minute
+}) {
   if (!delta) {
     return { send: false, type: "NONE" };
   }
@@ -249,6 +259,32 @@ function signalDecision({ total, totalPress, momentum, spike, delta, need, minut
 
   const xgExists = total.xg > 0;
   const realAttack = hasRealAttackIncrease(delta);
+
+  const radarTime = radarMemory.get(fixtureId);
+  const wasRadarRecently =
+    radarTime && Date.now() - radarTime <= 5 * 60 * 1000;
+
+  const ultra =
+    wasRadarRecently &&
+    xgExists &&
+    total.xg >= 0.7 &&
+    spike >= XG_SPIKE_MIN &&
+    momentum >= 2.0 &&
+    totalPress >= MIN_ELITE &&
+    realAttack;
+
+  if (ultra) {
+    radarMemory.delete(fixtureId);
+
+    return {
+      send: true,
+      type: "ULTRA",
+      title: "🚨🔥 ULTRA REAL SPIKE",
+      karar: "💣 ANLIK GİR",
+      stake: "%1 - %2 kasa",
+      note: "Önce RADAR geldi, ardından XG + momentum + gerçek pozisyon artışı güçlendi. Fake veri kullanılmadı."
+    };
+  }
 
   const elite =
     xgExists &&
@@ -276,6 +312,8 @@ function signalDecision({ total, totalPress, momentum, spike, delta, need, minut
     realAttack;
 
   if (radar) {
+    radarMemory.set(fixtureId, Date.now());
+
     return {
       send: true,
       type: "RADAR",
@@ -301,7 +339,7 @@ function shouldSend(key, minutes = 12) {
 }
 
 async function analyze() {
-  console.log("🔎 ELITE + RADAR REAL kaliteli lig taraması başladı...");
+  console.log("🔎 ELITE + RADAR + ULTRA REAL kaliteli lig taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -324,6 +362,7 @@ async function analyze() {
 
   let checked = 0;
   let statsYok = 0;
+  let ultraSent = 0;
   let eliteSent = 0;
   let radarSent = 0;
   let pas = 0;
@@ -378,6 +417,7 @@ async function analyze() {
     const need = neededGoal(market, homeGoals, awayGoals);
 
     const decision = signalDecision({
+      fixtureId,
       total: totalStats,
       totalPress,
       momentum,
@@ -394,7 +434,12 @@ async function analyze() {
 
     const key = `${fixtureId}_${market}_${decision.type}`;
 
-    if (!shouldSend(key, decision.type === "ELITE" ? 15 : 10)) {
+    const cooldown =
+      decision.type === "ULTRA" ? 20 :
+      decision.type === "ELITE" ? 15 :
+      10;
+
+    if (!shouldSend(key, cooldown)) {
       continue;
     }
 
@@ -441,20 +486,21 @@ ${decision.note}
 
     await sendTelegram(msg);
 
+    if (decision.type === "ULTRA") ultraSent++;
     if (decision.type === "ELITE") eliteSent++;
     if (decision.type === "RADAR") radarSent++;
   }
 
   console.log(
-    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Elite:${eliteSent} | Radar:${radarSent} | Pas:${pas}`
+    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Ultra:${ultraSent} | Elite:${eliteSent} | Radar:${radarSent} | Pas:${pas}`
   );
 }
 
 async function startBot() {
-  console.log("🤖 MEZBAHANE ELITE + RADAR REAL KALİTELİ LİG BOT BAŞLADI");
+  console.log("🤖 MEZBAHANE ELITE + RADAR + ULTRA REAL BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>MEZBAHANE ELITE + RADAR REAL BOT AKTİF ✅</b>\nKaliteli lig filtresi aktif. ELITE için XG şart. XG yoksa sadece REAL RADAR/İZLE bildirimi çalışır. Fake veri yok."
+    "🤖 <b>MEZBAHANE ELITE + RADAR + ULTRA REAL BOT AKTİF ✅</b>\nRADAR izleme, ELITE giriş, ULTRA radar sonrası güçlenme sistemi aktif. Fake veri yok."
   );
 
   await analyze();
