@@ -141,6 +141,7 @@ function pressureScore(t, minute) {
   score += t.xg * 4.0;
 
   if (minute >= 50 && minute <= 80) score += 1.0;
+  if (minute >= 25 && minute <= 44) score += 0.7;
 
   return Number(score.toFixed(1));
 }
@@ -159,21 +160,63 @@ function momentumScore(d) {
   return Number(score.toFixed(1));
 }
 
-function chooseMarket(minute, homeGoals, awayGoals) {
+function marketCandidates({
+  minute,
+  homeGoals,
+  awayGoals,
+  homePressure,
+  awayPressure,
+  totalPressure,
+  homeMomentum,
+  awayMomentum,
+  totalMomentum
+}) {
   const total = homeGoals + awayGoals;
+  const markets = [];
 
-  if (minute <= 45) {
-    if (total === 0) return { market: "İlk Yarı 0.5 ÜST", need: 1 };
-    if (total === 1) return { market: "İlk Yarı 1.5 ÜST", need: 1 };
+  const add = (market, need, score, type) => {
+    if (need === 1) {
+      markets.push({
+        market,
+        need,
+        score: Number(score.toFixed(1)),
+        type
+      });
+    }
+  };
+
+  if (minute >= 15 && minute <= 44) {
+    if (total === 0) add("İlk Yarı 0.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
+    if (total === 1) add("İlk Yarı 1.5 ÜST", 1, totalPressure + totalMomentum - 0.5, "OVER");
+    if (total === 2 && minute <= 42) add("İlk Yarı 2.5 ÜST", 1, totalPressure + totalMomentum - 1.0, "OVER");
   }
 
-  if (minute > 45 && minute <= 82) {
-    if (total <= 1) return { market: "Maç Sonu 1.5 ÜST", need: Math.max(0, 2 - total) };
-    if (total === 2) return { market: "Maç Sonu 2.5 ÜST", need: 1 };
-    if (total === 3) return { market: "Maç Sonu 3.5 ÜST", need: 1 };
+  if (minute >= 46 && minute <= 82) {
+    if (total === 1) add("Maç Sonu 1.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
+    if (total === 2) add("Maç Sonu 2.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
+    if (total === 3) add("Maç Sonu 3.5 ÜST", 1, totalPressure + totalMomentum - 0.5, "OVER");
+    if (total === 4 && minute <= 78) add("Maç Sonu 4.5 ÜST", 1, totalPressure + totalMomentum - 1.0, "OVER");
   }
 
-  return null;
+  if (minute >= 50 && minute <= 85) {
+    const homeDominant =
+      homePressure >= awayPressure + 5 &&
+      homeMomentum >= awayMomentum + 1.5;
+
+    const awayDominant =
+      awayPressure >= homePressure + 5 &&
+      awayMomentum >= homeMomentum + 1.5;
+
+    if (homeDominant) {
+      add("Sıradaki Gol Ev Sahibi", 1, homePressure + homeMomentum + 1.5, "NEXT_GOAL_HOME");
+    }
+
+    if (awayDominant) {
+      add("Sıradaki Gol Deplasman Takımı", 1, awayPressure + awayMomentum + 1.5, "NEXT_GOAL_AWAY");
+    }
+  }
+
+  return markets.sort((a, b) => b.score - a.score);
 }
 
 function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) {
@@ -183,24 +226,31 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
   if (!delta) return { ok: false };
 
   if (!marketInfo || marketInfo.need !== 1) return { ok: false };
-  if (minute < 50 || minute > 82) return { ok: false };
+
+  const isFirstHalfMarket = marketInfo.market.includes("İlk Yarı");
+  const isFullTimeMarket = marketInfo.market.includes("Maç Sonu");
+  const isNextGoalMarket = marketInfo.market.includes("Sıradaki Gol");
+
+  if (isFirstHalfMarket && (minute < 15 || minute > 44)) return { ok: false };
+  if (isFullTimeMarket && (minute < 46 || minute > 82)) return { ok: false };
+  if (isNextGoalMarket && (minute < 50 || minute > 85)) return { ok: false };
 
   let points = 0;
 
-  if (pressure >= 20) {
+  if (pressure >= 22) {
     points += 2;
     reasons.push("Toplam baskı çok yüksek");
-  } else if (pressure >= 17) {
+  } else if (pressure >= 18) {
     points += 1;
     reasons.push("Toplam baskı yüksek");
   } else {
     risks.push("Baskı yeterince güçlü değil");
   }
 
-  if (momentum >= 5) {
+  if (momentum >= 6) {
     points += 2;
     reasons.push("Momentum çok güçlü");
-  } else if (momentum >= 4) {
+  } else if (momentum >= 4.5) {
     points += 1;
     reasons.push("Momentum güçlü");
   } else {
@@ -246,17 +296,27 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
     reasons.push("Son turda XG spike var");
   }
 
+  if (isNextGoalMarket) {
+    points += 1;
+    reasons.push("Baskı yönü tek tarafa dönmüş");
+  }
+
   const confidence = Math.min(10, points);
 
   return {
-    ok: confidence >= 8 && pressure >= 17 && momentum >= 4 && delta.shotsOn >= 1 && delta.inside >= 1,
+    ok:
+      confidence >= 8 &&
+      pressure >= 18 &&
+      momentum >= 4.5 &&
+      delta.shotsOn >= 1 &&
+      delta.inside >= 1,
     confidence,
     reasons,
     risks
   };
 }
 
-function shouldSend(key, minutes = 12) {
+function shouldSend(key, minutes = 15) {
   const last = sent.get(key) || 0;
 
   if (Date.now() - last < minutes * 60 * 1000) return false;
@@ -266,7 +326,7 @@ function shouldSend(key, minutes = 12) {
 }
 
 async function analyze() {
-  console.log("🔎 YÜKSEK GÜVEN GOL HER AN taraması başladı...");
+  console.log("🔎 YÜKSEK GÜVEN GOL HER AN + TÜM MARKETLER taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -304,13 +364,6 @@ async function analyze() {
     const homeGoals = Number(m.goals.home || 0);
     const awayGoals = Number(m.goals.away || 0);
 
-    const marketInfo = chooseMarket(minute, homeGoals, awayGoals);
-
-    if (!marketInfo) {
-      pas++;
-      continue;
-    }
-
     const stats = await getStats(id);
 
     if (!stats || stats.length < 2) {
@@ -325,22 +378,51 @@ async function analyze() {
     const totalStats = combine(homeStats, awayStats);
 
     const old = memory.get(id);
-    const delta = old ? diff(totalStats, old.totalStats) : null;
+
+    const homeDelta = old ? diff(homeStats, old.homeStats) : null;
+    const awayDelta = old ? diff(awayStats, old.awayStats) : null;
+    const totalDelta = old ? diff(totalStats, old.totalStats) : null;
 
     memory.set(id, {
+      homeStats,
+      awayStats,
       totalStats,
       minute
     });
 
-    const pressure = pressureScore(totalStats, minute);
-    const momentum = momentumScore(delta);
+    const homePressure = pressureScore(homeStats, minute);
+    const awayPressure = pressureScore(awayStats, minute);
+    const totalPressure = pressureScore(totalStats, minute);
+
+    const homeMomentum = momentumScore(homeDelta);
+    const awayMomentum = momentumScore(awayDelta);
+    const totalMomentum = momentumScore(totalDelta);
+
+    const markets = marketCandidates({
+      minute,
+      homeGoals,
+      awayGoals,
+      homePressure,
+      awayPressure,
+      totalPressure,
+      homeMomentum,
+      awayMomentum,
+      totalMomentum
+    });
+
+    const marketInfo = markets[0];
+
+    if (!marketInfo) {
+      pas++;
+      continue;
+    }
 
     const qc = qualityCheck({
       minute,
       total: totalStats,
-      delta,
-      pressure,
-      momentum,
+      delta: totalDelta,
+      pressure: totalPressure,
+      momentum: totalMomentum,
       marketInfo
     });
 
@@ -353,6 +435,11 @@ async function analyze() {
 
     if (!shouldSend(key, 15)) continue;
 
+    const otherMarkets = markets
+      .slice(1, 4)
+      .map((x, i) => `${i + 2}) ${x.market} | Skor: ${x.score}`)
+      .join("\n");
+
     const msg = `
 🚨🔥 <b>GOL HER AN - YÜKSEK GÜVEN</b>
 
@@ -364,19 +451,26 @@ async function analyze() {
 🎯 <b>Önerilen Market:</b> ${marketInfo.market}
 🥅 <b>Gereken Gol:</b> ${marketInfo.need}
 📌 <b>Güven:</b> ${qc.confidence}/10
+📊 <b>Market Skoru:</b> ${marketInfo.score}
 
 <b>CANLI TOPLAM VERİ</b>
-📈 Baskı: ${pressure}
-🧭 Momentum: ${momentum}
+📈 Baskı: ${totalPressure}
+🧭 Momentum: ${totalMomentum}
 🎯 Toplam XG: ${totalStats.xg > 0 ? totalStats.xg : "API’de yok"}
-🚀 XG Artışı: ${delta ? delta.xg : "İlk ölçüm"}
+🚀 XG Artışı: ${totalDelta ? totalDelta.xg : "İlk ölçüm"}
+
+<b>BASKI YÖNÜ</b>
+🏠 Ev Baskı: ${homePressure}
+✈️ Dep Baskı: ${awayPressure}
+🏠 Ev Momentum: ${homeMomentum}
+✈️ Dep Momentum: ${awayMomentum}
 
 <b>SON TUR ARTIŞ</b>
-📍 Şut Artışı: ${delta.shots}
-🎯 İsabet Artışı: ${delta.shotsOn}
-📦 Ceza İçi Şut Artışı: ${delta.inside}
-🚩 Korner Artışı: ${delta.corners}
-⚡ Tehlikeli Atak Artışı: ${delta.dangerous}
+📍 Şut Artışı: ${totalDelta.shots}
+🎯 İsabet Artışı: ${totalDelta.shotsOn}
+📦 Ceza İçi Şut Artışı: ${totalDelta.inside}
+🚩 Korner Artışı: ${totalDelta.corners}
+⚡ Tehlikeli Atak Artışı: ${totalDelta.dangerous}
 
 <b>TOPLAM İSTATİSTİK</b>
 📍 Şut: ${totalStats.shots}
@@ -392,6 +486,7 @@ async function analyze() {
 🎯 İsabet: ${homeStats.shotsOn}
 📦 Ceza İçi: ${homeStats.inside}
 🚩 Korner: ${homeStats.corners}
+⚡ Tehlikeli Atak: ${homeStats.dangerous}
 🎯 XG: ${homeStats.xg > 0 ? homeStats.xg : "Yok"}
 
 <b>DEPLASMAN</b>
@@ -399,7 +494,10 @@ async function analyze() {
 🎯 İsabet: ${awayStats.shotsOn}
 📦 Ceza İçi: ${awayStats.inside}
 🚩 Korner: ${awayStats.corners}
+⚡ Tehlikeli Atak: ${awayStats.dangerous}
 🎯 XG: ${awayStats.xg > 0 ? awayStats.xg : "Yok"}
+
+${otherMarkets ? `<b>DİĞER UYGUN MARKETLER</b>\n${otherMarkets}\n` : ""}
 
 🧠 <b>NET KARAR:</b> GİRİLEBİLİR
 💰 <b>Stake:</b> %0.5 - %1 kasa
@@ -423,10 +521,10 @@ ${qc.risks.length ? qc.risks.map(x => "• " + x).join("\n") : "Belirgin veri ri
 }
 
 async function startBot() {
-  console.log("🤖 YÜKSEK GÜVEN GOL HER AN BOT BAŞLADI");
+  console.log("🤖 YÜKSEK GÜVEN GOL HER AN + TÜM MARKETLER BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>YÜKSEK GÜVEN GOL HER AN BOT AKTİF ✅</b>\nTüm canlı maçlar taranır. Sadece güçlü baskı + momentum + isabet + ceza içi artışı varsa bildirim gelir. Fake veri yok."
+    "🤖 <b>YÜKSEK GÜVEN GOL HER AN BOT AKTİF ✅</b>\nTüm istenen marketler eklendi. Bot sadece yüksek güvenli gol anlarını gönderir. Fake veri yok."
   );
 
   await analyze();
