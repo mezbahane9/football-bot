@@ -2,9 +2,9 @@ const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_INTERVAL = 180000;
-const STATS_DELAY = 1500;
-const MAX_MATCH = 40;
+const POLL_INTERVAL = 240000;
+const STATS_DELAY = 2500;
+const MAX_MATCH = 20;
 
 const sent = new Map();
 const memory = new Map();
