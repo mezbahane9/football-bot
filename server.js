@@ -2,9 +2,15 @@ const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POLL_INTERVAL = 240000;
-const STATS_DELAY = 2500;
-const MAX_MATCH = 20;
+const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 240000);
+const STATS_DELAY = Number(process.env.STATS_DELAY || 2500);
+const MAX_MATCH = Number(process.env.MAX_MATCH || 20);
+
+const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE || 7);
+const MIN_PRESSURE = Number(process.env.MIN_PRESSURE || 14);
+const MIN_MOMENTUM = Number(process.env.MIN_MOMENTUM || 3);
+const MIN_SHOT = Number(process.env.MIN_SHOT || 1);
+const MIN_DANGER_ATTACK = Number(process.env.MIN_DANGER_ATTACK || 8);
 
 const sent = new Map();
 const memory = new Map();
@@ -66,8 +72,8 @@ async function getStats(fixtureId) {
 
 function getValue(arr, name) {
   const raw = arr.find(x => x.type === name)?.value;
-
   if (raw === null || raw === undefined) return 0;
+
   if (typeof raw === "string" && raw.includes("%")) {
     return Number(raw.replace("%", "")) || 0;
   }
@@ -86,16 +92,10 @@ function extractStats(team) {
     inside: getValue(s, "Shots insidebox"),
     outside: getValue(s, "Shots outsidebox"),
     corners: getValue(s, "Corner Kicks"),
-    offsides: getValue(s, "Offsides"),
-    fouls: getValue(s, "Fouls"),
+    dangerous: getValue(s, "Dangerous Attacks"),
+    possession: getValue(s, "Ball Possession"),
     yellow: getValue(s, "Yellow Cards"),
     red: getValue(s, "Red Cards"),
-    possession: getValue(s, "Ball Possession"),
-    saves: getValue(s, "Goalkeeper Saves"),
-    passes: getValue(s, "Total passes"),
-    accuratePasses: getValue(s, "Passes accurate"),
-    passPercent: getValue(s, "Passes %"),
-    dangerous: getValue(s, "Dangerous Attacks"),
     xg: getValue(s, "Expected Goals")
   };
 }
@@ -140,8 +140,8 @@ function pressureScore(t, minute) {
   score += t.dangerous * 0.06;
   score += t.xg * 4.0;
 
-  if (minute >= 50 && minute <= 80) score += 1.0;
   if (minute >= 25 && minute <= 44) score += 0.7;
+  if (minute >= 50 && minute <= 80) score += 1.0;
 
   return Number(score.toFixed(1));
 }
@@ -185,12 +185,14 @@ function marketCandidates({
     }
   };
 
+  // İlk yarı marketleri
   if (minute >= 15 && minute <= 44) {
     if (total === 0) add("İlk Yarı 0.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
     if (total === 1) add("İlk Yarı 1.5 ÜST", 1, totalPressure + totalMomentum - 0.5, "OVER");
     if (total === 2 && minute <= 42) add("İlk Yarı 2.5 ÜST", 1, totalPressure + totalMomentum - 1.0, "OVER");
   }
 
+  // Maç sonu marketleri
   if (minute >= 46 && minute <= 82) {
     if (total === 1) add("Maç Sonu 1.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
     if (total === 2) add("Maç Sonu 2.5 ÜST", 1, totalPressure + totalMomentum, "OVER");
@@ -198,6 +200,7 @@ function marketCandidates({
     if (total === 4 && minute <= 78) add("Maç Sonu 4.5 ÜST", 1, totalPressure + totalMomentum - 1.0, "OVER");
   }
 
+  // Sıradaki gol marketleri
   if (minute >= 50 && minute <= 85) {
     const homeDominant =
       homePressure >= awayPressure + 5 &&
@@ -219,7 +222,7 @@ function marketCandidates({
   return markets.sort((a, b) => b.score - a.score);
 }
 
-function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) {
+function qualityCheck({ total, delta, pressure, momentum, marketInfo }) {
   const reasons = [];
   const risks = [];
 
@@ -227,34 +230,26 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
 
   if (!marketInfo || marketInfo.need !== 1) return { ok: false };
 
-  const isFirstHalfMarket = marketInfo.market.includes("İlk Yarı");
-  const isFullTimeMarket = marketInfo.market.includes("Maç Sonu");
-  const isNextGoalMarket = marketInfo.market.includes("Sıradaki Gol");
-
-  if (isFirstHalfMarket && (minute < 15 || minute > 44)) return { ok: false };
-  if (isFullTimeMarket && (minute < 46 || minute > 82)) return { ok: false };
-  if (isNextGoalMarket && (minute < 50 || minute > 85)) return { ok: false };
-
   let points = 0;
 
   if (pressure >= 22) {
     points += 2;
     reasons.push("Toplam baskı çok yüksek");
-  } else if (pressure >= 18) {
+  } else if (pressure >= MIN_PRESSURE) {
     points += 1;
-    reasons.push("Toplam baskı yüksek");
+    reasons.push("Toplam baskı yeterli");
   } else {
-    risks.push("Baskı yeterince güçlü değil");
+    risks.push("Baskı yetersiz");
   }
 
   if (momentum >= 6) {
     points += 2;
     reasons.push("Momentum çok güçlü");
-  } else if (momentum >= 4.5) {
+  } else if (momentum >= MIN_MOMENTUM) {
     points += 1;
-    reasons.push("Momentum güçlü");
+    reasons.push("Momentum yeterli");
   } else {
-    risks.push("Momentum düşük");
+    risks.push("Momentum yetersiz");
   }
 
   if (delta.shots >= 2) {
@@ -262,7 +257,7 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
     reasons.push("Son turda şut artışı var");
   }
 
-  if (delta.shotsOn >= 1) {
+  if (delta.shotsOn >= MIN_SHOT) {
     points += 2;
     reasons.push("Son turda isabetli şut artışı var");
   } else {
@@ -276,7 +271,7 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
     risks.push("Ceza içi artış yok");
   }
 
-  if (delta.corners >= 1 || delta.dangerous >= 5) {
+  if (delta.corners >= 1 || delta.dangerous >= MIN_DANGER_ATTACK) {
     points += 1;
     reasons.push("Korner veya tehlikeli atak artışı var");
   }
@@ -286,7 +281,7 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
     reasons.push("XG güçlü destek veriyor");
   } else if (total.xg > 0) {
     points += 1;
-    reasons.push("XG mevcut ama çok yüksek değil");
+    reasons.push("XG mevcut");
   } else {
     risks.push("XG API’de yok, fake XG üretilmedi");
   }
@@ -296,7 +291,7 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
     reasons.push("Son turda XG spike var");
   }
 
-  if (isNextGoalMarket) {
+  if (marketInfo.type === "NEXT_GOAL_HOME" || marketInfo.type === "NEXT_GOAL_AWAY") {
     points += 1;
     reasons.push("Baskı yönü tek tarafa dönmüş");
   }
@@ -305,11 +300,11 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
 
   return {
     ok:
-      confidence >= 7 &&
-      pressure >= 17 &&
-      momentum >= 4 &&
-      delta.shotsOn >= 1 &&
-      delta.inside >= 1,
+      confidence >= MIN_CONFIDENCE &&
+      pressure >= MIN_PRESSURE &&
+      momentum >= MIN_MOMENTUM &&
+      delta.shotsOn >= MIN_SHOT &&
+      (delta.inside >= 1 || delta.dangerous >= MIN_DANGER_ATTACK),
     confidence,
     reasons,
     risks
@@ -318,15 +313,13 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
 
 function shouldSend(key, minutes = 15) {
   const last = sent.get(key) || 0;
-
   if (Date.now() - last < minutes * 60 * 1000) return false;
-
   sent.set(key, Date.now());
   return true;
 }
 
 async function analyze() {
-  console.log("🔎 YÜKSEK GÜVEN GOL HER AN + TÜM MARKETLER taraması başladı...");
+  console.log("🔎 ENV KONTROLLÜ GOL HER AN + TÜM MARKETLER taraması başladı...");
 
   const matches = await getLiveMatches();
 
@@ -418,7 +411,6 @@ async function analyze() {
     }
 
     const qc = qualityCheck({
-      minute,
       total: totalStats,
       delta: totalDelta,
       pressure: totalPressure,
@@ -521,10 +513,10 @@ ${qc.risks.length ? qc.risks.map(x => "• " + x).join("\n") : "Belirgin veri ri
 }
 
 async function startBot() {
-  console.log("🤖 YÜKSEK GÜVEN GOL HER AN + TÜM MARKETLER BOT BAŞLADI");
+  console.log("🤖 ENV KONTROLLÜ GOL HER AN + TÜM MARKETLER BOT BAŞLADI");
 
   await sendTelegram(
-    "🤖 <b>YÜKSEK GÜVEN GOL HER AN BOT AKTİF ✅</b>\nTüm istenen marketler eklendi. Bot sadece yüksek güvenli gol anlarını gönderir. Fake veri yok."
+    "🤖 <b>ENV KONTROLLÜ GOL HER AN BOT AKTİF ✅</b>\nMarketler aktif. Eşikler ENV’den okunuyor. Fake veri yok."
   );
 
   await analyze();
