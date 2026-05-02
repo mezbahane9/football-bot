@@ -1,305 +1,443 @@
-// MEZBAHANE BOT - DEBUG + NORMAL + ELITE SİNYAL SİSTEMİ
-
-const express = require("express");
-const axios = require("axios");
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-
-// ENV
-const API_KEY = process.env.API_KEY || process.env.API_FOOTBALL_KEY;
+const API_KEY = process.env.API_KEY;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const MIN_CONFIDENCE = Number(process.env.MIN_CONFIDENCE || 4);
-const MIN_PRESSURE = Number(process.env.MIN_PRESSURE || 10);
-const MIN_MOMENTUM = Number(process.env.MIN_MOMENTUM || 1);
-const MIN_SHOT = Number(process.env.MIN_SHOT || 0);
-const MIN_DANGER_ATTACK = Number(process.env.MIN_DANGER_ATTACK || 3);
+const POLL_INTERVAL = 180000;
+const STATS_DELAY = 1500;
+const MAX_MATCH = 40;
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 180000);
+const sent = new Map();
+const memory = new Map();
 
-let sentSignals = new Set();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-app.get("/", (req, res) => {
-  res.send("Mezbahane Bot Aktif ✅");
-});
-
-async function sendTelegramMessage(text) {
+async function sendTelegram(text) {
   try {
-    if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-      console.log("❌ Telegram ENV eksik:", {
-        TELEGRAM_TOKEN: !!TELEGRAM_TOKEN,
-        TELEGRAM_CHAT_ID: !!TELEGRAM_CHAT_ID,
-      });
-      return;
-    }
-
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-      {
-        chat_id: TELEGRAM_CHAT_ID,
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
         text,
         parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }
-    );
-
-    console.log("✅ Telegram mesaj gönderildi");
+        disable_web_page_preview: true
+      })
+    });
   } catch (err) {
-    console.log("❌ Telegram gönderim hatası:", err.response?.data || err.message);
+    console.log("Telegram hata:", err.message);
   }
 }
 
-function getStat(stats, names) {
-  if (!Array.isArray(stats)) return 0;
+async function apiGet(url) {
+  try {
+    const res = await fetch(url, {
+      headers: { "x-apisports-key": API_KEY }
+    });
 
-  for (const item of stats) {
-    const type = String(item.type || "").toLowerCase();
-
-    for (const name of names) {
-      if (type.includes(name.toLowerCase())) {
-        let value = item.value;
-
-        if (typeof value === "string") {
-          value = value.replace("%", "");
-        }
-
-        return Number(value) || 0;
-      }
+    if (res.status === 429) {
+      console.log("Rate limit. 90 sn bekleniyor...");
+      await sleep(90000);
+      return null;
     }
-  }
 
-  return 0;
+    if (!res.ok) {
+      console.log("API HTTP hata:", res.status);
+      return null;
+    }
+
+    return await res.json();
+  } catch (err) {
+    console.log("API hata:", err.message);
+    return null;
+  }
 }
 
-function calculateScores(homeStats, awayStats, minute) {
-  const homeShotsOn = getStat(homeStats, ["shots on goal", "shots on target"]);
-  const awayShotsOn = getStat(awayStats, ["shots on goal", "shots on target"]);
+async function getLiveMatches() {
+  const data = await apiGet("https://v3.football.api-sports.io/fixtures?live=all");
+  return data?.response || [];
+}
 
-  const homeShotsOff = getStat(homeStats, ["shots off goal", "shots off target"]);
-  const awayShotsOff = getStat(awayStats, ["shots off goal", "shots off target"]);
+async function getStats(fixtureId) {
+  const data = await apiGet(
+    `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`
+  );
+  return data?.response || [];
+}
 
-  const homeCorners = getStat(homeStats, ["corner kicks"]);
-  const awayCorners = getStat(awayStats, ["corner kicks"]);
+function getValue(arr, name) {
+  const raw = arr.find(x => x.type === name)?.value;
 
-  const homeDanger = getStat(homeStats, ["dangerous attacks"]);
-  const awayDanger = getStat(awayStats, ["dangerous attacks"]);
+  if (raw === null || raw === undefined) return 0;
+  if (typeof raw === "string" && raw.includes("%")) {
+    return Number(raw.replace("%", "")) || 0;
+  }
 
-  const totalShotsOn = homeShotsOn + awayShotsOn;
-  const totalShotsOff = homeShotsOff + awayShotsOff;
-  const totalCorners = homeCorners + awayCorners;
-  const totalDanger = homeDanger + awayDanger;
+  return Number(raw) || 0;
+}
 
-  const pressure =
-    totalShotsOn * 4 +
-    totalShotsOff * 1.5 +
-    totalCorners * 2 +
-    Math.floor(totalDanger / 5);
-
-  const momentum =
-    totalShotsOn * 2 +
-    totalCorners +
-    Math.floor(totalDanger / 10);
-
-  let confidence = 0;
-
-  if (totalShotsOn >= 1) confidence += 2;
-  if (totalShotsOn >= 2) confidence += 2;
-  if (totalShotsOff >= 3) confidence += 1;
-  if (totalCorners >= 3) confidence += 1;
-  if (totalDanger >= 20) confidence += 1;
-  if (totalDanger >= 35) confidence += 1;
-  if (minute >= 15 && minute <= 80) confidence += 1;
-
-  const trueXG =
-    totalShotsOn * 0.32 +
-    totalShotsOff * 0.08 +
-    totalCorners * 0.06 +
-    totalDanger * 0.015;
+function extractStats(team) {
+  const s = team?.statistics || [];
 
   return {
-    totalShotsOn,
-    totalShotsOff,
-    totalCorners,
-    totalDanger,
-    pressure: Math.round(pressure),
-    momentum: Math.round(momentum),
-    confidence: Math.min(10, Math.round(confidence)),
-    trueXG: Number(trueXG.toFixed(2)),
+    shots: getValue(s, "Total Shots"),
+    shotsOn: getValue(s, "Shots on Goal"),
+    shotsOff: getValue(s, "Shots off Goal"),
+    blocked: getValue(s, "Blocked Shots"),
+    inside: getValue(s, "Shots insidebox"),
+    outside: getValue(s, "Shots outsidebox"),
+    corners: getValue(s, "Corner Kicks"),
+    offsides: getValue(s, "Offsides"),
+    fouls: getValue(s, "Fouls"),
+    yellow: getValue(s, "Yellow Cards"),
+    red: getValue(s, "Red Cards"),
+    possession: getValue(s, "Ball Possession"),
+    saves: getValue(s, "Goalkeeper Saves"),
+    passes: getValue(s, "Total passes"),
+    accuratePasses: getValue(s, "Passes accurate"),
+    passPercent: getValue(s, "Passes %"),
+    dangerous: getValue(s, "Dangerous Attacks"),
+    xg: getValue(s, "Expected Goals")
   };
 }
 
-function isNormalSignal(score) {
-  return (
-    score.confidence >= MIN_CONFIDENCE &&
-    score.pressure >= MIN_PRESSURE &&
-    score.momentum >= MIN_MOMENTUM &&
-    score.totalShotsOn >= MIN_SHOT &&
-    score.totalDanger >= MIN_DANGER_ATTACK
-  );
-}
-
-function isEliteSignal(score) {
-  return (
-    score.confidence >= 7 &&
-    score.pressure >= 17 &&
-    score.momentum >= 4 &&
-    score.totalShotsOn >= 2 &&
-    score.totalDanger >= 18 &&
-    score.trueXG >= 0.85
-  );
-}
-
-async function getLiveFixtures() {
-  const url = "https://v3.football.api-sports.io/fixtures?live=all";
-
-  const response = await axios.get(url, {
-    headers: {
-      "x-apisports-key": API_KEY,
-    },
-  });
-
-  return response.data.response || [];
-}
-
-async function getFixtureStats(fixtureId) {
-  const url = `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`;
-
-  const response = await axios.get(url, {
-    headers: {
-      "x-apisports-key": API_KEY,
-    },
-  });
-
-  return response.data.response || [];
-}
-
-async function scanMatches() {
-  try {
-    console.log("🔎 YÜKSEK GÜVEN GOL HER AN taraması başladı...");
-
-    if (!API_KEY) {
-      console.log("❌ API_KEY eksik");
-      return;
-    }
-
-    const fixtures = await getLiveFixtures();
-
-    console.log(`⚽ ${fixtures.length} canlı maç bulundu`);
-
-    let checked = 0;
-    let statsYok = 0;
-    let sent = 0;
-    let passed = 0;
-
-    for (const match of fixtures) {
-      try {
-        const fixtureId = match.fixture?.id;
-        const home = match.teams?.home?.name || "Ev Sahibi";
-        const away = match.teams?.away?.name || "Deplasman";
-        const league = match.league?.name || "Lig";
-        const country = match.league?.country || "";
-        const minute = match.fixture?.status?.elapsed || 0;
-        const goalsHome = match.goals?.home ?? 0;
-        const goalsAway = match.goals?.away ?? 0;
-
-        if (!fixtureId || minute < 8 || minute > 85) {
-          passed++;
-          continue;
-        }
-
-        checked++;
-
-        const stats = await getFixtureStats(fixtureId);
-
-        if (!Array.isArray(stats) || stats.length < 2) {
-          statsYok++;
-          console.log(`⚠️ Stats yok: ${home} - ${away}`);
-          continue;
-        }
-
-        const homeStats = stats[0]?.statistics || [];
-        const awayStats = stats[1]?.statistics || [];
-
-        const score = calculateScores(homeStats, awayStats, minute);
-
-        const signalKey = `${fixtureId}-${goalsHome}-${goalsAway}`;
-
-        const normalSignal = isNormalSignal(score);
-        const eliteSignal = isEliteSignal(score);
-
-        if ((normalSignal || eliteSignal) && !sentSignals.has(signalKey)) {
-          const signalType = eliteSignal ? "🔥 ELITE GOL HER AN" : "✅ NORMAL GOL BEKLENTİSİ";
-
-          const message = `
-${signalType}
-
-⚽ <b>${home} - ${away}</b>
-🏆 ${country} / ${league}
-⏱ Dakika: ${minute}
-📊 Skor: ${goalsHome}-${goalsAway}
-
-🎯 İsabetli Şut: ${score.totalShotsOn}
-🥅 Toplam Şut: ${score.totalShotsOn + score.totalShotsOff}
-🚩 Korner: ${score.totalCorners}
-⚡ Tehlikeli Atak: ${score.totalDanger}
-
-🔥 Pressure: ${score.pressure}
-📈 Momentum: ${score.momentum}
-🧠 Confidence: ${score.confidence}/10
-📌 True XG: ${score.trueXG}
-
-📣 Sinyal: Gol her an gelebilir.
-          `.trim();
-
-          await sendTelegramMessage(message);
-
-          sentSignals.add(signalKey);
-          sent++;
-        } else {
-          passed++;
-
-          console.log("PAS NEDENİ:", {
-            mac: `${home} - ${away}`,
-            dakika: minute,
-            skor: `${goalsHome}-${goalsAway}`,
-            confidence: score.confidence,
-            pressure: score.pressure,
-            momentum: score.momentum,
-            shotsOn: score.totalShotsOn,
-            dangerousAttacks: score.totalDanger,
-            trueXG: score.trueXG,
-            gerekli: {
-              MIN_CONFIDENCE,
-              MIN_PRESSURE,
-              MIN_MOMENTUM,
-              MIN_SHOT,
-              MIN_DANGER_ATTACK,
-            },
-          });
-        }
-      } catch (innerErr) {
-        console.log("⚠️ Maç işleme hatası:", innerErr.response?.data || innerErr.message);
-      }
-    }
-
-    console.log(
-      `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Gönderildi:${sent} | Pas:${passed}`
-    );
-  } catch (err) {
-    console.log("❌ Genel tarama hatası:", err.response?.data || err.message);
+function combine(a, b) {
+  const out = {};
+  for (const k of Object.keys(a)) {
+    out[k] = (a[k] || 0) + (b[k] || 0);
   }
+  return out;
 }
 
-app.listen(PORT, async () => {
-  console.log(`🚀 Server ${PORT} portunda çalışıyor`);
+function diff(now, old) {
+  if (!old) return null;
 
-  await sendTelegramMessage(
-    "🤖 YÜKSEK GÜVEN GOL HER AN BOT AKTİF ✅\nTüm canlı maçlar taranıyor."
+  const out = {};
+  for (const k of Object.keys(now)) {
+    out[k] = Math.max(0, (now[k] || 0) - (old[k] || 0));
+  }
+
+  return out;
+}
+
+function badLeague(name = "") {
+  const bad = [
+    "U19", "U20", "U21", "U23",
+    "Youth", "Reserve", "Reserves",
+    "Women", "Friendly", "Club Friendlies",
+    "Amateur", "Regional"
+  ];
+
+  return bad.some(x => name.toLowerCase().includes(x.toLowerCase()));
+}
+
+function pressureScore(t, minute) {
+  let score = 0;
+
+  score += t.shots * 0.35;
+  score += t.shotsOn * 1.8;
+  score += t.inside * 0.9;
+  score += t.corners * 0.9;
+  score += t.dangerous * 0.06;
+  score += t.xg * 4.0;
+
+  if (minute >= 50 && minute <= 80) score += 1.0;
+
+  return Number(score.toFixed(1));
+}
+
+function momentumScore(d) {
+  if (!d) return 0;
+
+  const score =
+    d.shots * 0.8 +
+    d.shotsOn * 2.3 +
+    d.inside * 1.2 +
+    d.corners * 1.3 +
+    d.dangerous * 0.12 +
+    d.xg * 5.0;
+
+  return Number(score.toFixed(1));
+}
+
+function chooseMarket(minute, homeGoals, awayGoals) {
+  const total = homeGoals + awayGoals;
+
+  if (minute <= 45) {
+    if (total === 0) return { market: "İlk Yarı 0.5 ÜST", need: 1 };
+    if (total === 1) return { market: "İlk Yarı 1.5 ÜST", need: 1 };
+  }
+
+  if (minute > 45 && minute <= 82) {
+    if (total <= 1) return { market: "Maç Sonu 1.5 ÜST", need: Math.max(0, 2 - total) };
+    if (total === 2) return { market: "Maç Sonu 2.5 ÜST", need: 1 };
+    if (total === 3) return { market: "Maç Sonu 3.5 ÜST", need: 1 };
+  }
+
+  return null;
+}
+
+function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) {
+  const reasons = [];
+  const risks = [];
+
+  if (!delta) return { ok: false };
+
+  if (!marketInfo || marketInfo.need !== 1) return { ok: false };
+  if (minute < 50 || minute > 82) return { ok: false };
+
+  let points = 0;
+
+  if (pressure >= 20) {
+    points += 2;
+    reasons.push("Toplam baskı çok yüksek");
+  } else if (pressure >= 17) {
+    points += 1;
+    reasons.push("Toplam baskı yüksek");
+  } else {
+    risks.push("Baskı yeterince güçlü değil");
+  }
+
+  if (momentum >= 5) {
+    points += 2;
+    reasons.push("Momentum çok güçlü");
+  } else if (momentum >= 4) {
+    points += 1;
+    reasons.push("Momentum güçlü");
+  } else {
+    risks.push("Momentum düşük");
+  }
+
+  if (delta.shots >= 2) {
+    points += 1;
+    reasons.push("Son turda şut artışı var");
+  }
+
+  if (delta.shotsOn >= 1) {
+    points += 2;
+    reasons.push("Son turda isabetli şut artışı var");
+  } else {
+    risks.push("Son turda isabet artışı yok");
+  }
+
+  if (delta.inside >= 1) {
+    points += 2;
+    reasons.push("Ceza içi şut artışı var");
+  } else {
+    risks.push("Ceza içi artış yok");
+  }
+
+  if (delta.corners >= 1 || delta.dangerous >= 5) {
+    points += 1;
+    reasons.push("Korner veya tehlikeli atak artışı var");
+  }
+
+  if (total.xg >= 0.8) {
+    points += 2;
+    reasons.push("XG güçlü destek veriyor");
+  } else if (total.xg > 0) {
+    points += 1;
+    reasons.push("XG mevcut ama çok yüksek değil");
+  } else {
+    risks.push("XG API’de yok, fake XG üretilmedi");
+  }
+
+  if (delta.xg >= 0.10) {
+    points += 2;
+    reasons.push("Son turda XG spike var");
+  }
+
+  const confidence = Math.min(10, points);
+
+  return {
+    ok: confidence >= 8 && pressure >= 17 && momentum >= 4 && delta.shotsOn >= 1 && delta.inside >= 1,
+    confidence,
+    reasons,
+    risks
+  };
+}
+
+function shouldSend(key, minutes = 12) {
+  const last = sent.get(key) || 0;
+
+  if (Date.now() - last < minutes * 60 * 1000) return false;
+
+  sent.set(key, Date.now());
+  return true;
+}
+
+async function analyze() {
+  console.log("🔎 YÜKSEK GÜVEN GOL HER AN taraması başladı...");
+
+  const matches = await getLiveMatches();
+
+  const filtered = matches
+    .filter(m => {
+      const minute = m.fixture.status.elapsed;
+      const league = m.league.name || "";
+
+      if (!minute) return false;
+      if (minute < 1 || minute > 90) return false;
+      if (badLeague(league)) return false;
+
+      return true;
+    })
+    .slice(0, MAX_MATCH);
+
+  console.log(`⚽ ${matches.length} canlı maç | İncelenecek: ${filtered.length}`);
+
+  let checked = 0;
+  let statsYok = 0;
+  let sentCount = 0;
+  let pas = 0;
+
+  for (const m of filtered) {
+    await sleep(STATS_DELAY);
+
+    const id = m.fixture.id;
+    const minute = m.fixture.status.elapsed;
+
+    const homeName = m.teams.home.name;
+    const awayName = m.teams.away.name;
+    const league = m.league.name;
+    const country = m.league.country;
+
+    const homeGoals = Number(m.goals.home || 0);
+    const awayGoals = Number(m.goals.away || 0);
+
+    const marketInfo = chooseMarket(minute, homeGoals, awayGoals);
+
+    if (!marketInfo) {
+      pas++;
+      continue;
+    }
+
+    const stats = await getStats(id);
+
+    if (!stats || stats.length < 2) {
+      statsYok++;
+      continue;
+    }
+
+    checked++;
+
+    const homeStats = extractStats(stats[0]);
+    const awayStats = extractStats(stats[1]);
+    const totalStats = combine(homeStats, awayStats);
+
+    const old = memory.get(id);
+    const delta = old ? diff(totalStats, old.totalStats) : null;
+
+    memory.set(id, {
+      totalStats,
+      minute
+    });
+
+    const pressure = pressureScore(totalStats, minute);
+    const momentum = momentumScore(delta);
+
+    const qc = qualityCheck({
+      minute,
+      total: totalStats,
+      delta,
+      pressure,
+      momentum,
+      marketInfo
+    });
+
+    if (!qc.ok) {
+      pas++;
+      continue;
+    }
+
+    const key = `${id}_${marketInfo.market}_GOL_HER_AN`;
+
+    if (!shouldSend(key, 15)) continue;
+
+    const msg = `
+🚨🔥 <b>GOL HER AN - YÜKSEK GÜVEN</b>
+
+⚽ <b>${homeName} - ${awayName}</b>
+🌍 <b>${country} / ${league}</b>
+⏱ <b>Dakika:</b> ${minute}
+📊 <b>Skor:</b> ${homeGoals}-${awayGoals}
+
+🎯 <b>Önerilen Market:</b> ${marketInfo.market}
+🥅 <b>Gereken Gol:</b> ${marketInfo.need}
+📌 <b>Güven:</b> ${qc.confidence}/10
+
+<b>CANLI TOPLAM VERİ</b>
+📈 Baskı: ${pressure}
+🧭 Momentum: ${momentum}
+🎯 Toplam XG: ${totalStats.xg > 0 ? totalStats.xg : "API’de yok"}
+🚀 XG Artışı: ${delta ? delta.xg : "İlk ölçüm"}
+
+<b>SON TUR ARTIŞ</b>
+📍 Şut Artışı: ${delta.shots}
+🎯 İsabet Artışı: ${delta.shotsOn}
+📦 Ceza İçi Şut Artışı: ${delta.inside}
+🚩 Korner Artışı: ${delta.corners}
+⚡ Tehlikeli Atak Artışı: ${delta.dangerous}
+
+<b>TOPLAM İSTATİSTİK</b>
+📍 Şut: ${totalStats.shots}
+🎯 İsabet: ${totalStats.shotsOn}
+📤 İsabetsiz: ${totalStats.shotsOff}
+📦 Ceza İçi Şut: ${totalStats.inside}
+🚩 Korner: ${totalStats.corners}
+⚡ Tehlikeli Atak: ${totalStats.dangerous}
+⚽ Topa Sahip Olma: ${totalStats.possession}%
+
+<b>EV SAHİBİ</b>
+📍 Şut: ${homeStats.shots}
+🎯 İsabet: ${homeStats.shotsOn}
+📦 Ceza İçi: ${homeStats.inside}
+🚩 Korner: ${homeStats.corners}
+🎯 XG: ${homeStats.xg > 0 ? homeStats.xg : "Yok"}
+
+<b>DEPLASMAN</b>
+📍 Şut: ${awayStats.shots}
+🎯 İsabet: ${awayStats.shotsOn}
+📦 Ceza İçi: ${awayStats.inside}
+🚩 Korner: ${awayStats.corners}
+🎯 XG: ${awayStats.xg > 0 ? awayStats.xg : "Yok"}
+
+🧠 <b>NET KARAR:</b> GİRİLEBİLİR
+💰 <b>Stake:</b> %0.5 - %1 kasa
+
+✅ <b>Güçlü Sebepler:</b>
+${qc.reasons.map(x => "• " + x).join("\n")}
+
+⚠️ <b>Risk Notu:</b>
+${qc.risks.length ? qc.risks.map(x => "• " + x).join("\n") : "Belirgin veri riski yok."}
+
+⚠️ Garanti değildir. Kasa yönetimi şart.
+`;
+
+    await sendTelegram(msg);
+    sentCount++;
+  }
+
+  console.log(
+    `📊 ÖZET → Bakıldı:${checked} | StatsYok:${statsYok} | Gönderildi:${sentCount} | Pas:${pas}`
+  );
+}
+
+async function startBot() {
+  console.log("🤖 YÜKSEK GÜVEN GOL HER AN BOT BAŞLADI");
+
+  await sendTelegram(
+    "🤖 <b>YÜKSEK GÜVEN GOL HER AN BOT AKTİF ✅</b>\nTüm canlı maçlar taranır. Sadece güçlü baskı + momentum + isabet + ceza içi artışı varsa bildirim gelir. Fake veri yok."
   );
 
-  scanMatches();
+  await analyze();
 
-  setInterval(scanMatches, POLL_INTERVAL_MS);
-});
+  setInterval(async () => {
+    try {
+      await analyze();
+    } catch (err) {
+      console.log("Ana hata:", err.message);
+    }
+  }, POLL_INTERVAL);
+}
+
+startBot();
