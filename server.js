@@ -305,9 +305,9 @@ function qualityCheck({ minute, total, delta, pressure, momentum, marketInfo }) 
 
   return {
     ok:
-      confidence >= 8 &&
-      pressure >= 18 &&
-      momentum >= 4.5 &&
+      confidence >= 7 &&
+      pressure >= 17 &&
+      momentum >= 4 &&
       delta.shotsOn >= 1 &&
       delta.inside >= 1,
     confidence,
